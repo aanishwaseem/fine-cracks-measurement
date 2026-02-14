@@ -1,0 +1,11 @@
+- a .py for generating reference imgs
+- reference's threshold = 0.4
+
+- a settings at start to adjust threshold
+
+
+width calculation:
+
+- threshold < 0.2 pixels count as 0.2mm
+- < 0.4 pixles count as 0.4mm
+- > 0.6 grey pixels count as 1mm

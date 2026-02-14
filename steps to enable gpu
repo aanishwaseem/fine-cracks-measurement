@@ -1,0 +1,10 @@
+>>> import torch
+>>> torch.__version__
+'2.10.0+cpu'
+
+python 3.10
+enter venv
+python -m pip install --upgrade pip
+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt

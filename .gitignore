@@ -1,0 +1,9 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+snapshots/
+extra_imgs/
+default_grids_mask/

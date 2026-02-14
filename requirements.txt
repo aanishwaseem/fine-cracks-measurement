@@ -1,0 +1,10 @@
+numpy
+opencv-python
+Pillow
+scikit-image
+requests
+matplotlib
+tqdm
+visdom
+setproctitle
+yacs
