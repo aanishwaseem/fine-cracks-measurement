@@ -152,7 +152,10 @@ def get_sanitized_folder_name(full_path):
     # Sanitize: keep only alphanumeric, dash, underscore
     sanitized = re.sub(r'[^A-Za-z0-9_\-]', '_', folder_name)
     return sanitized
-def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_recreation=True, make_reference_image=False):
+def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_recreation=True, make_reference_image=False, tile_size = None):
+    if tile_size == None:
+        tile_size = img.shape[0]
+
     parent_folder = get_sanitized_folder_name(parent_folder)
     print(f"[INFO] Running grid lines removal...{parent_folder}")
 
@@ -178,7 +181,6 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
         # # Recreate mask if needed
         # if activate_grid_mask_recreation:
             print(f"[INFO] Proceeding with grid lines removal with mask thickness: {THICKNESS}...")
-            tile_size = img.shape[0]
             #check if not making reference image, then we need to drive out more details so tile size should be reduced
             if (not make_reference_image):
                 tile_size = int(tile_size / 2)

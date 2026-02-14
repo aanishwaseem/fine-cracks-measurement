@@ -86,7 +86,7 @@ def getBinaryImage(img_gray, deepcrack_img_with_grids, mask):
     # return merged
 
 
-def join_tiles_after_inference(dir_string, inference_res_dir, tile_size, original_h, original_w, ext="jpg", save=True):
+def join_tiles_after_inference(dir_string, inference_res_dir, tile_size, original_h, original_w, ext="jpg", save=False):
     folder = os.path.join(dir_string, inference_res_dir)
     original_size = (original_h, original_w)  # (H, W)
 

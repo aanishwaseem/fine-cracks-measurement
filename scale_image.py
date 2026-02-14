@@ -56,22 +56,19 @@ def realesrgan_to_np(img_b64, scale=4):
     return img_np
 
 def scale_image(img, scale):
-    orig_h, orig_w = img.shape[:2]
-
-    # Skip scaling if image is already large enough
-    if (scale == 2 and orig_w > 1800) or (scale == 4 and orig_w > 3000):
+    if (scale == 2 and img.shape[1] > 1800) or (scale == 4 and img.shape[1] > 3000):
         return img
 
-    # Scale using your existing method
+    # Super-resolve
     img_b64 = img_to_b64(img)
     output = realesrgan_to_np(img_b64, scale)
 
-    # Desired dimensions
-    target_h = orig_h * scale
-    target_w = orig_w * scale
+    orig_h, orig_w = img.shape[:2]
+    target_h, target_w = orig_h * scale, orig_w * scale
 
-    # If scaled image does not match exactly, resize/stretch it
-    if output.shape[0] != target_h or output.shape[1] != target_w:
+    # Force exact size
+    output_h, output_w = output.shape[:2]
+    if output_h != target_h or output_w != target_w:
         output = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
     return output
