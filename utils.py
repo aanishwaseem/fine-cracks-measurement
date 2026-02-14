@@ -50,8 +50,8 @@ def run_inference(tiles_dir, output_dir="experiment"):
 
 def extract_deepcracks(deepcrack_img_with_grids, mask):
     mask_improved = remove_grid_pieces_only(mask)
-    cv2.imwrite("deepcrack_results.png",deepcrack_img_with_grids)
-    cv2.imwrite("deepcrack_results_mask.png",mask_improved)
+    # cv2.imwrite("deepcrack_results.png",deepcrack_img_with_grids)
+    # cv2.imwrite("deepcrack_results_mask.png",mask_improved)
     output = inpaint_with_mask(
         image_np=deepcrack_img_with_grids,
         mask_np=mask_improved,
@@ -70,7 +70,7 @@ def getBinaryImage(img_gray, deepcrack_img_with_grids, mask):
         print("Running final step.. Please wait a minute")
         reconstructedImg = join_tiles_after_inference(crack_segmentation_dir_string,"experiment", tile_size=tile_size, original_h=img_gray.shape[0], original_w=img_gray.shape[1], save=True)
         deepCrackImg = extract_deepcracks(deepcrack_img_with_grids, mask)
-        cv2.imwrite("deepcrack_results.png",deepcrack_img_with_grids)
+        # cv2.imwrite("deepcrack_results.png",deepcrack_img_with_grids)
         merged = overlay_binary_images(reconstructedImg, deepCrackImg)
         print("[INFO] Crack extraction successful.")
         return merged

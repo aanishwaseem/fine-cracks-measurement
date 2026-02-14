@@ -210,7 +210,7 @@ def resize_images_in_dir(img_dir, overwrite=True, save_dir=None):
         else:
             save_path = img_path  # overwrite
 
-        cv2.imwrite(save_path, resized_img)
+        # cv2.imwrite(save_path, resized_img)
 
     # print(f"Resized {len(img_files)} images to 512x512 pixels.")
 
@@ -296,7 +296,7 @@ def restore_images_to_original_size_padded(img_dir):
         new_name = pattern.sub('.', img_name)
         new_path = os.path.join(img_dir, new_name)
 
-        cv2.imwrite(new_path, restored)
+        # cv2.imwrite(new_path, restored)
 
         if new_path != img_path:
             os.remove(img_path)
@@ -344,7 +344,7 @@ def restore_images_to_original_size(img_dir):
         new_name = pattern.sub('.', img_name)
         new_path = os.path.join(img_dir, new_name)
 
-        cv2.imwrite(new_path, restored)
+        # cv2.imwrite(new_path, restored)
         # print(f"Restored {img_name} to {orig_w}x{orig_h} -> {new_name}")
 
         if new_path != img_path:

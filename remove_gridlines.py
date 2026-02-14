@@ -271,7 +271,7 @@ def make_mask_from_deepcrack_img(img, parent_folder="random", THICKNESS=2):
 
     # Save binary mask
     
-    cv2.imwrite(f'default_grids_mask/{parent_folder}.jpg', mask)
+    # cv2.imwrite(f'default_grids_mask/{parent_folder}.jpg', mask)
     return mask
 
 def remove_grid_pieces_only(
