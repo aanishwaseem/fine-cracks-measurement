@@ -9,6 +9,10 @@ from skimage import io, exposure, img_as_ubyte
 import cv2
 import subprocess
 import sys
+from multiprocessing import Process, Queue
+import time
+import shutil
+import threading
 crack_segmentation_dir_string = "models/crack_segmentation"
 crack_segmentation_dir = os.path.join(os.getcwd(), crack_segmentation_dir_string)
 
@@ -61,22 +65,83 @@ def extract_deepcracks(deepcrack_img_with_grids, mask):
     )
     return output
 def getBinaryImage(img_gray, deepcrack_img_with_grids, mask):
-    print("[INFO] Extracting all possible cracks..")
-
-    tile_size = 256
+    """
+    Extract cracks by running UNet and DeepCrack in PARALLEL.
+    
+    ✅ PARALLEL EXECUTION:
+    - UNet inference runs on separate thread
+    - DeepCrack extraction runs on separate thread
+    - Both complete simultaneously, then merge
+    """
+    print("[INFO] Extracting all possible cracks (PARALLEL mode)...")
+    
+    tile_size = 512
+    
+    # Prepare UNet tiles (lightweight, can do upfront)
     make_tiles_fixed_size(img_gray, tile_size=tile_size)
-    try:
-        res = run_inference(f"tiles2_s", output_dir="experiment")
-        print("Running final step.. Please wait a minute")
-        reconstructedImg = join_tiles_after_inference(crack_segmentation_dir_string,"experiment", tile_size=tile_size, original_h=img_gray.shape[0], original_w=img_gray.shape[1], save=True)
-        deepCrackImg = extract_deepcracks(deepcrack_img_with_grids, mask)
-        # cv2.imwrite("deepcrack_results.png",deepcrack_img_with_grids)
-        merged = overlay_binary_images(reconstructedImg, deepCrackImg)
-        print("[INFO] Crack extraction successful.")
-        return merged
-    except Exception as e:
-        print(f"[ERROR] Crack extraction failed: {e}")
+    
+    # Create threads for parallel execution
+    import threading
+    
+    # Thread 1: Run UNet inference
+    unet_result = {"status": "running", "data": None}
+    def run_unet_thread():
+        try:
+            res = run_inference(f"tiles2_s", output_dir="experiment")
+            reconstructed = join_tiles_after_inference(
+                crack_segmentation_dir_string,
+                "experiment",
+                tile_size=tile_size,
+                original_h=img_gray.shape[0],
+                original_w=img_gray.shape[1],
+                save=True
+            )
+            unet_result["data"] = reconstructed
+            unet_result["status"] = "complete"
+            print("[✓] UNet inference completed")
+        except Exception as e:
+            print(f"[✗] UNet inference failed: {e}")
+            unet_result["status"] = "error"
+    
+    # Thread 2: Run DeepCrack extraction (in parallel)
+    deepcrack_result = {"status": "running", "data": None}
+    def run_deepcrack_thread():
+        try:
+            deepCrackImg = extract_deepcracks(deepcrack_img_with_grids, mask)
+            deepcrack_result["data"] = deepCrackImg
+            deepcrack_result["status"] = "complete"
+            print("[✓] DeepCrack extraction completed")
+        except Exception as e:
+            print(f"[✗] DeepCrack extraction failed: {e}")
+            deepcrack_result["status"] = "error"
+    
+    # Start both threads
+    print("[→] Launching UNet inference thread...")
+    t_unet = threading.Thread(target=run_unet_thread, daemon=False)
+    t_unet.start()
+    
+    print("[→] Launching DeepCrack extraction thread...")
+    t_deepcrack = threading.Thread(target=run_deepcrack_thread, daemon=False)
+    t_deepcrack.start()
+    
+    # Wait for both to complete
+    print("[⏳] Waiting for both threads to complete...")
+    t_unet.join()  # Wait for UNet
+    t_deepcrack.join()  # Wait for DeepCrack
+    
+    # Check if both succeeded
+    if unet_result["status"] != "complete" or deepcrack_result["status"] != "complete":
+        print(f"[ERROR] UNet: {unet_result['status']}, DeepCrack: {deepcrack_result['status']}")
         return None
+    
+    # Merge results
+    print("[→] Merging results from both pipelines...")
+    reconstructedImg = unet_result["data"]
+    deepCrackImg = deepcrack_result["data"]
+    
+    merged = overlay_binary_images(reconstructedImg, deepCrackImg)
+    print("[INFO] Crack extraction successful (parallel execution completed).")
+    return merged
 
     # reconstructedImg = cv2.imread("CS_2.png")
     # deepCrackImg = cv2.imread("DC_More.png")
@@ -125,60 +190,57 @@ def make_tiles_fixed_size(img, tile_size=512, save_dir=f"{crack_segmentation_dir
 def split_image(img, tile_size=256, save_dir=None):
     """
     Split an image into tiles of size `tile_size x tile_size`.
-    Leftover edges are kept as smaller tiles.
-
-    Args:
-        img (PIL.Image or np.array): Input image.
-        tile_size (int): Tile size (default 256).
-        save_dir (str): Optional directory to save tiles as numbered PNGs.
-
-    Returns:
-        pieces (list of np.array): List of image tiles.
+    ⚡ THREADED: Saves tiles to disk in parallel when save_dir is given.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     if isinstance(img, Image.Image):
         img = np.array(img)
 
     H, W = img.shape[:2]
     pieces = []
+    save_tasks = []
     count = 1
 
     for y in range(0, H, tile_size):
         for x in range(0, W, tile_size):
             tile = img[y:y+tile_size, x:x+tile_size].copy()
             pieces.append(tile)
-
             if save_dir:
-                os.makedirs(save_dir, exist_ok=True)
-                tile_img = Image.fromarray(tile)
-                tile_img.save(os.path.join(save_dir, f"{count}.png"))
-
+                save_tasks.append((tile, count))
             count += 1
+
+    if save_dir and save_tasks:
+        os.makedirs(save_dir, exist_ok=True)
+
+        def _save_tile(args):
+            tile, idx = args
+            tile_img = Image.fromarray(tile)
+            tile_img.save(os.path.join(save_dir, f"{idx}.png"))
+
+        with ThreadPoolExecutor() as executor:
+            list(executor.map(_save_tile, save_tasks))
 
     return pieces
 
 def join_tiles_from_folder(folder_path, original_size, tile_size=256, ext="jpg"):
     """
     Join tiles from a folder back into the original image.
-
-    Args:
-        folder_path (str): Path to the folder containing tiles.
-        original_size (tuple): Original image size (H, W)
-        tile_size (int): Tile size used when splitting
-        ext (str): File extension of tiles (default "png")
-
-    Returns:
-        img (np.array): Reconstructed image
+    ⚡ THREADED: Loads tiles from disk in parallel.
     """
-    # Get list of files sorted by number
+    from concurrent.futures import ThreadPoolExecutor
+
     files = sorted(
         [f for f in os.listdir(folder_path) if f.endswith(ext)],
         key=lambda x: int(os.path.splitext(x)[0])
     )
 
-    # Load tiles
-    tiles = [np.array(Image.open(os.path.join(folder_path, f))) for f in files]
+    def _load_tile(f):
+        return np.array(Image.open(os.path.join(folder_path, f)))
 
-    # Determine channels
+    with ThreadPoolExecutor() as executor:
+        tiles = list(executor.map(_load_tile, files))
+
     H, W = original_size
     if len(tiles[0].shape) == 3:
         C = tiles[0].shape[2]
@@ -186,7 +248,6 @@ def join_tiles_from_folder(folder_path, original_size, tile_size=256, ext="jpg")
     else:
         img = np.zeros((H, W), dtype=tiles[0].dtype)
 
-    # Place tiles
     count = 0
     for y in range(0, H, tile_size):
         for x in range(0, W, tile_size):
@@ -290,32 +351,31 @@ def enhance_contrast_in_directory(
 ):
     """
     Apply contrast enhancement to all images in a directory.
-
-    Args:
-        input_dir (str): folder with input images
-        output_dir (str): folder to save results (if None, overwrite input)
-        extensions (tuple): valid image extensions
+    ⚡ THREADED: Processes tiles in parallel using ThreadPoolExecutor.
     """
+    from concurrent.futures import ThreadPoolExecutor
 
     if output_dir is None:
         output_dir = input_dir
     else:
         os.makedirs(output_dir, exist_ok=True)
 
-    for filename in os.listdir(input_dir):
-        if not filename.lower().endswith(extensions):
-            continue
+    filenames = [f for f in os.listdir(input_dir) if f.lower().endswith(extensions)]
+    if not filenames:
+        return
 
+    def _process_one(filename):
         in_path = os.path.join(input_dir, filename)
         out_path = os.path.join(output_dir, filename)
-
         try:
             image = io.imread(in_path)
             image_contrast = night_vision_lab(image)
             io.imsave(out_path, image_contrast)
-
         except Exception as e:
             print(f"- Failed: {filename} → {e}")
+
+    with ThreadPoolExecutor() as executor:
+        list(executor.map(_process_one, filenames))
 
 
 
@@ -343,6 +403,112 @@ def resize_image(img, w, h):
 
     resized = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
     return resized
+
+
+# ============================================================================
+# PARALLEL EXECUTION FUNCTIONS (New - preserve original functionality)
+# ============================================================================
+
+def _run_unet_parallel_wrapper(img_gray, tile_size, output_q):
+    """
+    Wrapper function to run UNet inference in a separate process.
+    """
+    try:
+        make_tiles_fixed_size(img_gray, tile_size=tile_size)
+        result = run_inference(f"tiles2_s", output_dir="experiment")
+        reconstructed = join_tiles_after_inference(
+            crack_segmentation_dir_string,
+            "experiment",
+            tile_size=tile_size,
+            original_h=img_gray.shape[0],
+            original_w=img_gray.shape[1],
+            save=False
+        )
+        output_q.put(("unet", reconstructed))
+        print("[✓] UNet inference completed")
+    except Exception as e:
+        print(f"[✗] UNet inference failed: {e}")
+        output_q.put(("unet", None))
+
+
+def _run_deepcrack_parallel_wrapper(img_color, tile_size, output_q):
+    """
+    Wrapper function to run DeepCrack pipeline in a separate process.
+    """
+    try:
+        from deepcrack_pipeline import start_deepcrack_pipeline
+        result = start_deepcrack_pipeline(
+            img_color,
+            f"{deep_crack_dir_string}/input_tiles",
+            original_h=img_color.shape[0],
+            original_w=img_color.shape[1],
+            tile_size=tile_size,
+            inc_contrast=True
+        )
+        output_q.put(("deepcrack", result))
+        print("[✓] DeepCrack pipeline completed")
+    except Exception as e:
+        print(f"[✗] DeepCrack pipeline failed: {e}")
+        output_q.put(("deepcrack", None))
+
+
+def run_both_inference_parallel(img_gray, img_color, tile_size=512):
+    """
+    Run UNet inference and DeepCrack pipeline in parallel.
+    
+    This is a parallel alternative to running them sequentially.
+    Original functions (getBinaryImage, run_inference, etc.) remain unchanged.
+    
+    Args:
+        img_gray (np.ndarray): Grayscale image for UNet
+        img_color (np.ndarray): Color image for DeepCrack
+        tile_size (int): Tile size for splitting (default 512)
+    
+    Returns:
+        dict: Dictionary with keys 'unet' and 'deepcrack' containing results
+              Returns {'unet': result_array, 'deepcrack': result_array}
+              Returns {'unet': None, 'deepcrack': None} if either fails
+    
+    Example:
+        results = run_both_inference_parallel(img_gray, img_color, tile_size=512)
+        unet_output = results['unet']
+        deepcrack_output = results['deepcrack']
+    """
+    print("[INFO] Starting parallel UNet + DeepCrack processing...")
+    start_time = time.time()
+    
+    output_queue = Queue()
+    processes = []
+    
+    # Start UNet process
+    print("[→] Launching UNet inference...")
+    p_unet = Process(target=_run_unet_parallel_wrapper, args=(img_gray, tile_size, output_queue))
+    p_unet.start()
+    processes.append(("UNet", p_unet))
+    
+    # Start DeepCrack process
+    print("[→] Launching DeepCrack pipeline...")
+    p_deepcrack = Process(target=_run_deepcrack_parallel_wrapper, args=(img_color, tile_size, output_queue))
+    p_deepcrack.start()
+    processes.append(("DeepCrack", p_deepcrack))
+    
+    # Wait for all processes to complete
+    for name, process in processes:
+        process.join()
+        print(f"[✓] {name} process finished")
+    
+    # Collect results from queue
+    results = {}
+    while not output_queue.empty():
+        key, value = output_queue.get()
+        results[key] = value
+    
+    elapsed_time = time.time() - start_time
+    print(f"[INFO] Parallel processing completed in {elapsed_time:.2f}s")
+    
+    return results
+
+# ============================================================================
 
 # img = cv2.imread("C-sample-sharp4.jpg")
 

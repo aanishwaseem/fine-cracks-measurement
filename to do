@@ -1,0 +1,40 @@
+    #RUNNING remove_gridlines and detect_cracks_no_area functions are TIME CONSUMING . consumes about 50 secs per img
+
+    mainly due to 2 inference models : deepcrack and crack_segmentator
+    
+    sols: either:
+    -  running deepcrack and crack_segementator models via multithreading
+    - or instead of calling both models with this command = [
+        sys.executable,
+        "inference_unet.py",
+        "-img_dir", f"./{tiles_dir}",
+        "-model_path", "models/model_unet_vgg16_best.pt",
+        .....
+        we call inference_unet function directly by importing
+
+    scenerio:
+    3 stages; removing gridlines in the image, running 2 crack models and finally merging the output of 2 cracks
+    - crack_segmentator is independent (called inside getBinaryImage)
+    - deepcrack pipeline is called inside remove_gridlines function
+    - remove_gridlines functions need a deepcrack image generated from deepcrack_pipeline
+    - after both models complete the output, they are merged inside getBinaryImage
+
+    current problem before doing parallelism in both models:
+    the img is broken down into 300x300 tiles both for crack_segmentator and deepcrack_pipeline. the tiles saved for deepcrack model is also inside crack_segmentator folder.  therefore it should be inside deepcrack model's own folder  
+
+    to run the code:
+    - go to E:\crack-20260128T190731Z-3-001\crack\venv\Scripts
+    - open command terminal in this directory
+    - write activate
+    - go back to E:\crack-20260128T190731Z-3-001\crack
+    write in terminal: 
+iopaint start --model lama --device cuda --port 8000 --realesrgan-model RealESRGAN_x4plus --realesrgan-device cuda --enable-realesrgan
+    - wait for the iopaint server to start
+
+
+
+    - now open another terminal
+    -activate the venv again by following the first 3 steps above
+- py crack.py
+- choose /dataset/d-cropped
+- choose /references/cropped_d_cleanup.png

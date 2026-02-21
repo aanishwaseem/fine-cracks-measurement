@@ -70,7 +70,7 @@ def scale_image(img, scale):
     output_h, output_w = output.shape[:2]
     if output_h != target_h or output_w != target_w:
         output = cv2.resize(output, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-
+    print("TESTING SCALE_IMAGE()")
     return output
 # img_b64 = img_to_b64("references/cropped_B.jpg")
 # img = realesrgan_to_np(img_b64, 4)

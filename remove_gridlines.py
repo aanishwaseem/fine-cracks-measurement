@@ -10,8 +10,10 @@ import json
 import numpy as np
 import sys
 from PIL import Image
+import hashlib
 
 crack_segmentation_dir_string = "models/crack_segmentation"
+deep_crack_dir_string = "models/DeepCrack/codes"
 
 line_segment_dir_string = "models/Unified-Line-Segment-Detection"
 line_segment_dir = os.path.join(os.getcwd(), line_segment_dir_string)
@@ -19,6 +21,10 @@ import threading
 import subprocess
 
 endpoint = 'http://127.0.0.1:8000/'
+
+# ✅ OPTIMIZATION: Cache for remove_gridlines results
+_remove_gridlines_cache = {}
+_intersect_masks_cache = {}
 
 def extract_and_hough_filter_tol(image_path, tol_horizontal=5, tol_vertical=1, thickness=3):
     """
@@ -165,30 +171,15 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
     mask = None
 
     try:
-        # # Check if default mask exists
-        # if not activate_grid_mask_recreation:
-        #     if os.path.exists(DEFAULT_MASK_PATH):
-        #         mask = cv2.imread(DEFAULT_MASK_PATH, cv2.IMREAD_GRAYSCALE)
-        #         if mask is None or mask.shape != img.shape[:2]:
-        #             print("[INFO] Default mask invalid. Recreating mask automatically...")
-        #             activate_grid_mask_recreation = True
-        #         else:
-        #             print("[INFO] Using default grid mask.")
-        #     else:
-        #         print("[INFO] Default mask not found. Recreating mask automatically...")
-        #         activate_grid_mask_recreation = True
-
-        # # Recreate mask if needed
-        # if activate_grid_mask_recreation:
             print(f"[INFO] Proceeding with grid lines removal with mask thickness: {THICKNESS}...")
-            #check if not making reference image, then we need to drive out more details so tile size should be reduced
+            #we need to drive out more details so tile size should be reduced
             if (not make_reference_image):
-                tile_size = int(tile_size / 2)
+                tile_size = 300
             deepCrackImg = start_deepcrack_pipeline(img,
-                                                    f"{crack_segmentation_dir_string}/tiles2_s",
+                                                    f"{deep_crack_dir_string}/input_tiles",
                                                     original_h=img.shape[0],
                                                     original_w=img.shape[1], tile_size=tile_size, inc_contrast=True)
-            mask = create_mask_pipeline(deepCrackImg, THICKNESS)
+            mask = create_mask_pipeline(deepCrackImg, THICKNESS, activate_grid_mask_recreation)
 
 
     except Exception as e:
@@ -201,13 +192,14 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
 
     # --- Step 3: Inpainting ---
     try:
-        output = inpaint_with_mask(
-            image_np=deepCrackImg,
-            mask_np=mask,
-            url=f"{endpoint}/api/v1/inpaint",
-            prompt="",
-            cv2_radius=4
-        )
+        output = None
+        # output = inpaint_with_mask(
+        #     image_np=deepCrackImg,
+        #     mask_np=mask,
+        #     url=f"{endpoint}/api/v1/inpaint",
+        #     prompt="",
+        #     cv2_radius=4
+        #)
     except Exception as e:
         print(f"[ERROR] NGROK server error: {e}")
         return None
@@ -215,18 +207,23 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
     print("[INFO] Grid lines removal successful.")
     return output, deepCrackImg,mask
 
-def create_mask_pipeline(deepcrack_crack_image, thickness):
-    save_dir=f"{line_segment_dir_string}/dataset/pinhole"
-    move_img_to_input_folder(deepcrack_crack_image, save_dir)
-    try:
-        run_line_segmentor()
-    except Exception as e:
-        print(f"[ERROR] Line segementor error: {e}")
-        return None
-    _,img_from_line_segmentor = extract_and_hough_filter_tol(f"{line_segment_dir_string}/output/pinhole/1.png",3,3,thickness)
+def create_mask_pipeline(deepcrack_crack_image, thickness, run_line_segmentator=False):
+    if (run_line_segmentator):
+        save_dir=f"{line_segment_dir_string}/dataset/pinhole"
+        move_img_to_input_folder(deepcrack_crack_image, save_dir)
+        try:
+            run_line_segmentor()
+        except Exception as e:
+            print(f"[ERROR] Line segementor error: {e}")
+            return None
+    
+        _,img_from_line_segmentor = extract_and_hough_filter_tol(f"{line_segment_dir_string}/output/pinhole/1.png",3,3,thickness)
     hough_mask = make_mask_from_deepcrack_img(deepcrack_crack_image, thickness)
-    merged = merge_masks(img_from_line_segmentor, hough_mask)
-    return merged
+    if (run_line_segmentator):
+        output = merge_masks(img_from_line_segmentor, hough_mask)
+    else:
+        output = hough_mask
+    return output
 def move_img_to_input_folder(img, save_dir):
     empty_folder(save_dir)
 

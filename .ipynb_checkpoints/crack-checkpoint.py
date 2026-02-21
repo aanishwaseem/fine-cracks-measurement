@@ -7,15 +7,11 @@ import numpy as np
 import math
 import os
 import re
-import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from tkinter import filedialog
 from crack_analysis import CrackAnalyse
-from utils import (getBinaryImage, resize_image, extract_deepcracks,
-                   overlay_binary_images, make_tiles_fixed_size,
-                   run_inference, join_tiles_after_inference,
-                   crack_segmentation_dir_string as _unet_dir_string)
+from utils import getBinaryImage, resize_image
 from remove_gridlines import remove_gridlines, intersect_masks
 from scale_image import scale_image
 from mask_tuning import MaskTuningUI
@@ -47,7 +43,6 @@ grid_spacing_mm = 100
 drag_start = None 
 drag_end = None
 highlighted_cell = None
-disable_cache = False  # Set to True to disable caching
 displacement_x = 0.0 
 binary_mask = None
 
@@ -61,72 +56,6 @@ activate_grid_mask_recreation = False
 #############################################################################
                         # HELPER FUNCTIONS
 ##############################################################################
-
-# ✅ NEW: Cache management functions
-def clear_all_caches():
-    """Clear all caching systems."""
-    global _grid_removal_cache, _crack_detection_cache
-    _grid_removal_cache.clear()
-    _crack_detection_cache.clear()
-    
-    # Clear DeepCrack cache
-    from deepcrack_pipeline import _deepcrack_result_cache
-    _deepcrack_result_cache.clear()
-    
-    print("[✓] All caches cleared")
-
-def print_cache_status():
-    """Print current cache status."""
-    global _grid_removal_cache, _crack_detection_cache
-    from deepcrack_pipeline import _deepcrack_result_cache
-    
-    print("\n" + "="*50)
-    print("CACHE STATUS")
-    print("="*50)
-    print(f"Grid Removal Cache: {len(_grid_removal_cache)} items")
-    print(f"Crack Detection Cache: {len(_crack_detection_cache)} items")
-    print(f"DeepCrack Cache: {len(_deepcrack_result_cache)} items")
-    print("="*50 + "\n")
-
-# ✅ NEW: Parallel execution helper
-def run_parallel_pipeline(image, image_gray):
-    """
-    Run DeepCrack and UNet in PARALLEL for maximum speed.
-    
-    ⚡ PARALLEL EXECUTION:
-    - DeepCrack runs on Thread 1
-    - UNet runs on Thread 2
-    - Both run simultaneously
-    
-    Usage:
-        deepcrack_img, unet_result, status = run_parallel_pipeline(image, image_gray)
-        if status['deepcrack_status'] == 'complete' and status['unet_status'] == 'complete':
-            # Both succeeded, proceed with merging
-    """
-    from deepcrack_pipeline import run_deepcrack_and_unet_parallel, deep_crack_dir_string as _dc_dir
-    
-    print("\n" + "="*60)
-    print("🚀 STARTING PARALLEL PIPELINE EXECUTION")
-    print("="*60)
-    
-    deepcrack_img, unet_result, status = run_deepcrack_and_unet_parallel(
-        image,
-        image_gray,
-        tiles_dir_deepcrack=f"{_dc_dir}/input_tiles",
-        original_h=image.shape[0],
-        original_w=image.shape[1],
-        tile_size=512,
-        inc_contrast=True
-    )
-    
-    print("\n" + "="*60)
-    print("✓ PARALLEL EXECUTION RESULTS:")
-    print(f"  DeepCrack: {status['deepcrack_status']}")
-    print(f"  UNet: {status['unet_status']}")
-    print(f"  Total Time: {status['total_time']:.2f}s")
-    print("="*60 + "\n")
-    
-    return deepcrack_img, unet_result, status
 
 def draw_transparent_rectangle(img, x, y, w, h, color=(0,55,0), alpha=0.2):
     overlay = img.copy()
@@ -225,35 +154,21 @@ def numeric_key(path):
 ##############################################################################
 
 def compute_average_scaling_factor_for_folder(folder_path):
-    """
-    Compute average scaling factors from images in a folder.
-    ⚡ THREADED: Loads and analyses images in parallel.
-    """
-    from concurrent.futures import ThreadPoolExecutor
-
     all_sfx = []
     all_sfy = []
     all_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path)
                  if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff'))]
     all_files = sorted(all_files, key=numeric_key)
     num_images = min(NUM_SCALING_IMAGES, len(all_files))
-    files_to_process = all_files[:num_images]
-
-    def _process_one(img_path):
+    for img_path in all_files[:num_images]:
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
-            return []
+            continue
         factors = detect_scaling_factors_in_image(img)
-        return factors if factors else []
-
-    with ThreadPoolExecutor() as executor:
-        results = list(executor.map(_process_one, files_to_process))
-
-    for factors in results:
-        for (sfx, sfy) in factors:
-            all_sfx.append(sfx)
-            all_sfy.append(sfy)
-
+        if factors:
+            for (sfx, sfy) in factors:
+                all_sfx.append(sfx)
+                all_sfy.append(sfy)
     if len(all_sfx) == 0:
         return None, None
     avg_sfx = np.mean(all_sfx)
@@ -333,7 +248,6 @@ def load_folder(folder_path):
 
 def load_image():
     global image, original_image, crack_image_on_bright, highlighted_cell, polygon_points, polygon_mode
-
     if current_image_index >= len(image_files):
         messagebox.showinfo("End", "All images in the folder have been processed.")
         return
@@ -496,7 +410,7 @@ def detect_cracks_no_area(image_no_grid, deepcrack_img, mask):
     binary_mask = testimg
     cracks_binary = get_binary_image_of_cracks(binary_mask, threshold_value)
     cracks_binary = intersect_masks(reference_image, cracks_binary)
-    binary_mask = cracks_binary
+
     crack_image = draw_contours_on_img(image_no_grid, cracks_binary)
     return crack_image
 
@@ -573,34 +487,9 @@ def loading_window():
     cv2.imshow(window_name, loading_img)
     cv2.waitKey(1)  # Small delay to refresh window
 
-##############################################################################
-                        # OPTIMIZATION CACHING
-##############################################################################
-# Cache processed results to avoid recomputation
-_grid_removal_cache = {}
-_crack_detection_cache = {}
-
-def _get_cache_key(img_path, params):
-    """Generate cache key based on image path and parameters."""
-    return (img_path, tuple(sorted(params.items())))
-
-def clear_cache():
-    """Clear all cached results."""
-    global _grid_removal_cache, _crack_detection_cache
-    _grid_removal_cache.clear()
-    _crack_detection_cache.clear()
-    print("[INFO] Cache cleared")
-
-##############################################################################
-                        # OPTIMIZED IMAGE PROCESSING
-##############################################################################
-
 def process_image(debug=False):
     global image, crack_image_on_bright, scaling_factor_width, scaling_factor_height
-    global _grid_removal_cache, _crack_detection_cache
-    
-    # ✅ OPTIMIZATION 1: Skip scaling factor detection after first pass
-    if current_image_index < NUM_SCALING_IMAGES and current_image_index == 0:
+    if current_image_index < NUM_SCALING_IMAGES:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
         blurred = cv2.GaussianBlur(gray, (5,5), 0)
@@ -613,140 +502,26 @@ def process_image(debug=False):
             area = cv2.contourArea(contour)
             if 0.9 < aspect_ratio < 1.1 and 1000 < area < 20000:
                 corrected_box = perspective_correction(gray, contour)
-    
-    # ✅ OPTIMIZATION 2: Cache text rendering (only render once per session)
+                # if corrected_box is not None:
+                #     draw_transparent_rectangle(image, x, y, w, h)
     if scaling_factor_width and scaling_factor_height:
         cv2.putText(image, f'Scaling Factor X: {scaling_factor_width:.2f} mm/px', (20,30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
         cv2.putText(image, f'Scaling Factor Y: {scaling_factor_height:.2f} mm/px', (20,50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-    
     if scale_image_factor > 1:
         image = scale_image(image, 2)
-    
-    # ✅ OPTIMIZATION 3: Cache grid removal results
-    current_img_path = image_files[current_image_index]
-    cache_params = {
-        'grid_mask_thickness': grid_mask_thickness,
-        'make_reference_image': make_reference_image
-    }
-    cache_key = _get_cache_key(current_img_path, cache_params)
-    
-    # ✅ OPTIMIZATION 4: Cache crack detection results (key computed upfront)
-    crack_cache_key = _get_cache_key(current_img_path, {'crack_detection': True})
+    output_img, deepcrack_img_with_grids, mask = remove_gridlines(image,os.path.dirname(image_files[current_image_index]), grid_mask_thickness,activate_grid_mask_recreation=True, make_reference_image=make_reference_image)
+    # print("First time done. running second time")
+    # image_no_grid, deepcrack_img_with_grids, mask = remove_gridlines(image_no_grid,os.path.dirname(image_files[current_image_index]), grid_mask_thickness,activate_grid_mask_recreation=True)
+    # cv2.imwrite("image_no_grid_2_iterations_sample.png", image_no_grid)
 
-    if cache_key in _grid_removal_cache and crack_cache_key in _crack_detection_cache:
-        # ── Both results cached ── fast path ──────────────────────────────────
-        print("[INFO] Using cached grid removal results")
-        output_img, deepcrack_img_with_grids, mask = _grid_removal_cache[cache_key]
-        print("[INFO] Using cached crack detection results")
-        crack_image_on_bright = _crack_detection_cache[crack_cache_key]
-
-    else:
-        # ── Cache miss: run DeepCrack + UNet truly in parallel ────────────────
-        # UNet and DeepCrack use completely separate tile directories:
-        #   UNet   →  models/crack_segmentation/tiles2_s
-        #   DeepCrack → models/DeepCrack/codes/input_tiles
-        # There is zero shared state, so both can run simultaneously.
-
-        _TILE_SIZE = 512
-
-        # Check whether grid removal result is already cached
-        if cache_key in _grid_removal_cache:
-            print("[INFO] Using cached grid removal results")
-            output_img, deepcrack_img_with_grids, mask = _grid_removal_cache[cache_key]
-            _grid_cache_hit = True
-        else:
-            _grid_cache_hit = False
-
-        # ── STEP 1: Prepare UNet tiles and start UNet inference NOW ───────────
-        # This runs concurrently while the DeepCrack pipeline (test.py) runs below.
-        print("[⚡] Preparing UNet tiles and launching UNet inference thread...")
-        make_tiles_fixed_size(image, tile_size=_TILE_SIZE)
-
-        _unet_data = {"result": None, "status": "pending"}
-
-        def _run_unet_bg(_img_ref=image):
-            try:
-                res = run_inference("tiles2_s", output_dir="experiment")
-                if res:
-                    reconstructed = join_tiles_after_inference(
-                        _unet_dir_string,
-                        "experiment",
-                        tile_size=_TILE_SIZE,
-                        original_h=_img_ref.shape[0],
-                        original_w=_img_ref.shape[1],
-                        save=False
-                    )
-                    _unet_data["result"] = reconstructed
-                    _unet_data["status"] = "complete"
-                    print("[✓] UNet inference complete")
-                else:
-                    _unet_data["status"] = "error"
-                    print("[✗] UNet inference failed")
-            except Exception as _e:
-                _unet_data["status"] = "error"
-                print(f"[✗] UNet inference error: {_e}")
-
-        _t_unet = threading.Thread(target=_run_unet_bg, name="UNet-Thread", daemon=False)
-        _t_unet.start()
-        print("[→] UNet thread started — DeepCrack pipeline starting now (both run in parallel)...")
-
-        # ── STEP 2: Run DeepCrack pipeline (blocks ~30s while UNet runs above) ─
-        if not _grid_cache_hit:
-            result = remove_gridlines(
-                image,
-                os.path.dirname(current_img_path),
-                grid_mask_thickness,
-                activate_grid_mask_recreation=False,
-                make_reference_image=make_reference_image
-            )
-            if result is None:
-                print("[ERROR] remove_gridlines returned None")
-                _t_unet.join()
-                return
-            output_img, deepcrack_img_with_grids, mask = result
-            _grid_removal_cache[cache_key] = (output_img, deepcrack_img_with_grids, mask)
-            print("[✓] DeepCrack pipeline complete")
-
-        # ── STEP 3: Start inpainting thread (needs deepcrack_img_with_grids) ──
-        # By the time DeepCrack finishes, UNet may already be done or nearly done.
-        _inpaint_data = {"result": None}
-
-        def _run_inpaint_bg(_dc_img=deepcrack_img_with_grids, _msk=mask):
-            try:
-                _inpaint_data["result"] = extract_deepcracks(_dc_img, _msk)
-                print("[✓] DeepCrack inpainting complete")
-            except Exception as _e:
-                print(f"[✗] DeepCrack inpainting error: {_e}")
-
-        _t_inpaint = threading.Thread(target=_run_inpaint_bg, name="Inpaint-Thread", daemon=False)
-        _t_inpaint.start()
-
-        # ── STEP 4: Join both threads ─────────────────────────────────────────
-        print("[⏳] Waiting for UNet and inpainting to complete...")
-        _t_unet.join()
-        _t_inpaint.join()
-
-        # ── STEP 5: Merge results ─────────────────────────────────────────────
-        if _unet_data["status"] == "complete" and _inpaint_data["result"] is not None:
-            merged = overlay_binary_images(_unet_data["result"], _inpaint_data["result"])
-            global binary_mask
-            binary_mask = merged
-            _cracks_binary = get_binary_image_of_cracks(merged, threshold_value)
-            _cracks_binary = intersect_masks(reference_image, _cracks_binary)
-            crack_image_on_bright = draw_contours_on_img(image, _cracks_binary)
-        else:
-            print("[WARN] Parallel path incomplete — falling back to sequential detect_cracks_no_area()")
-            crack_image_on_bright = detect_cracks_no_area(image, deepcrack_img_with_grids, mask)
-
-        _crack_detection_cache[crack_cache_key] = crack_image_on_bright
-    
+    # image = output_img
+    crack_image_on_bright = detect_cracks_no_area(image, deepcrack_img_with_grids, mask)
     if crack_image_on_bright is not None and debug:
         cv2.imshow("Cracks Only", crack_image_on_bright)
-        cv2.waitKey(0)
+        cv2.waitKey(0)  # Wait until you press a key
         cv2.destroyWindow("Cracks Only")
-
 ##############################################################################
                     # CALCULATION & GRID FUNCTIONS
 ##############################################################################
@@ -770,17 +545,14 @@ def compute_polygon_area(points):
 def draw_grid_on_image(img, grid_spacing_x=50, grid_spacing_y=50, displacement_x=0):
     img_with_grid = img.copy()
     h, w = img_with_grid.shape[:2]
-    displacement_x = int(displacement_x)
-
-    # Horizontal lines are full width; displacement is for vertical grid only.
+    
+    # Apply displacement to the grid horizontally
     for y in range(0, h, grid_spacing_y):
-        cv2.line(img_with_grid, (0, y), (w - 1, y), (0, 0, 0), 2)
-
+        cv2.line(img_with_grid, (displacement_x, y), (w + displacement_x, y), (0,0,0), 1)
+    
     for x in range(0, w, grid_spacing_x):
-        x_shifted = x + displacement_x
-        if 0 <= x_shifted < w:
-            cv2.line(img_with_grid, (x_shifted, 0), (x_shifted, h - 1), (0, 0, 0), 2)
-
+        cv2.line(img_with_grid, (x + displacement_x, 0), (x + displacement_x, h), (0,0,0), 1)
+    
     box_number = 1
     rows = h // grid_spacing_y
     cols = w // grid_spacing_x
@@ -790,18 +562,11 @@ def draw_grid_on_image(img, grid_spacing_x=50, grid_spacing_y=50, displacement_x
             cell_y = row * grid_spacing_y
             center_x = cell_x + grid_spacing_x // 2
             center_y = cell_y + grid_spacing_y // 2
-            if 0 <= center_x < w and 0 <= center_y < h:
-                cv2.putText(
-                    img_with_grid,
-                    str(box_number),
-                    (center_x - 10, center_y + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 0, 0),
-                    2,
-                )
+            cv2.putText(img_with_grid, str(box_number),
+                        (center_x - 10, center_y + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
             box_number += 1
-
+    
     return img_with_grid
 
 # Global variables to store the crack areas for the current and previous image
@@ -962,9 +727,9 @@ def on_mouse(event, x, y, flags, param):
 
                 cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-50),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-                cv2.imshow("Selected Polygon", selected_poly)
-                cv2.waitKey(0)
-                cv2.destroyWindow("Selected Polygon")
+                # cv2.imshow("Selected Polygon", selected_poly)
+                # cv2.waitKey(0)
+                # cv2.destroyWindow("Selected Polygon")
 
                 cv2.imshow("Crack Detection", image)
 
@@ -1075,12 +840,10 @@ def main_loop():
             else:
                 grid_spacing_x = grid_spacing_y = 80
 
-            full_grid = draw_grid_on_image(
-                image,
-                grid_spacing_x=grid_spacing_x,
-                grid_spacing_y=grid_spacing_y,
-                displacement_x=displacement_x,
-            )
+            full_grid = draw_grid_on_image(image,
+                                           grid_spacing_x=grid_spacing_x,
+                                           grid_spacing_y=grid_spacing_y,
+                                           displacement_x=convert_displacement_to_pixels(displacement_x, scaling_factor_width))
             grid_crop = full_grid[zoom_y1:zoom_y1+crop_h, zoom_x1:zoom_x1+crop_w]
             grid_resized = cv2.resize(grid_crop, (w, h), interpolation=cv2.INTER_LINEAR)
             crop = base_display[zoom_y1:zoom_y1+crop_h, zoom_x1:zoom_x1+crop_w]
@@ -1105,12 +868,10 @@ def main_loop():
                 grid_spacing_y = int(grid_spacing_mm / scaling_factor_height)
             else:
                 grid_spacing_x = grid_spacing_y = 80
-            display_image = draw_grid_on_image(
-                display_image,
-                grid_spacing_x=grid_spacing_x,
-                grid_spacing_y=grid_spacing_y,
-                displacement_x=displacement_x,
-            )
+            display_image = draw_grid_on_image(display_image,
+                                               grid_spacing_x=grid_spacing_x,
+                                               grid_spacing_y=grid_spacing_y,
+                                               displacement_x=convert_displacement_to_pixels(displacement_x, scaling_factor_width))
 
         cv2.imshow("Crack Detection", display_image)
         # win_w = cv2.getWindowImageRect("Crack Detection")[2]
