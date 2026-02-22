@@ -94,7 +94,7 @@ def getBinaryImage(img_gray, deepcrack_img_with_grids, mask):
                 tile_size=tile_size,
                 original_h=img_gray.shape[0],
                 original_w=img_gray.shape[1],
-                save=True
+                save=False
             )
             unet_result["data"] = reconstructed
             unet_result["status"] = "complete"

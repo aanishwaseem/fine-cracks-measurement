@@ -1,16 +1,15 @@
 ##############################################################################
                         # LIBRARY IMPORTS
 ##############################################################################
-#reduce dot size
-# confirm the original img's box is 100x100
-# show the min/max width
-#show the img number
+
 import cv2
 import numpy as np
 import math
 import os
 import re
 import threading
+import subprocess
+import atexit
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from tkinter import filedialog
@@ -349,9 +348,13 @@ def load_folder(folder_path):
         messagebox.showerror("Error", "No suitable scaling boxes found in the folder.")
     current_image_index = 0
     load_image()
-
+_image_loading = False
 def load_image():
-    global image, original_image, crack_image_on_bright, highlighted_cell, polygon_points, polygon_mode
+    global image, original_image, crack_image_on_bright, highlighted_cell, polygon_points, polygon_mode, _image_loading
+
+    if _image_loading:
+        return  # block re-entrant calls while a load is already in progress
+    _image_loading = True
 
     if current_image_index >= len(image_files):
         messagebox.showinfo("End", "All images in the folder have been processed.")
@@ -367,6 +370,7 @@ def load_image():
     polygon_points = []
     polygon_mode = False
     reset_main_image(img)
+    _image_loading = False
 
 def reset_main_image(new_img):
     global image
@@ -980,6 +984,9 @@ def on_mouse(event, x, y, flags, param):
 
                 cv2.putText(image, feat_text3, (polygon_points[0][0], polygon_points[0][1]-50),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+                
+                cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-35),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
                 # cv2.imshow("Selected Polygon", selected_poly)
                 # cv2.waitKey(0)
                 # cv2.destroyWindow("Selected Polygon")
@@ -1149,13 +1156,13 @@ def main_loop():
         # cv2.imshow("Crack Detection", display_resized)
         key = cv2.waitKey(1) & 0xFF
        
-        if key == ord('n'):
+        if key == ord('n') and not _image_loading:
             current_image_index += 1
             if current_image_index < len(image_files):
                 load_image()
             else:
                 print("End of images in folder.")
-        elif key == ord('b'):
+        elif key == ord('b') and not _image_loading:
             current_image_index = max(0, current_image_index - 1)
             load_image()
         elif key == ord('m'):

@@ -254,7 +254,7 @@ def start_deepcrack_pipeline(img, tiles_dir, original_h, original_w, tile_size=5
     generate_test_example(tiles_dir)
     run_deepcrack()
     restore_images_to_original_size(f"{deep_crack_dir_string}/deepcrack_results")
-    reconstructedImg = join_tiles_after_inference(deep_crack_dir_string,"deepcrack_results", tile_size=tile_size, original_h=original_h, original_w=original_w, ext="png", save=True)
+    reconstructedImg = join_tiles_after_inference(deep_crack_dir_string,"deepcrack_results", tile_size=tile_size, original_h=original_h, original_w=original_w, ext="png", save=False)
     
     # ✅ OPTIMIZATION: Store in cache
     _deepcrack_result_cache[cache_key] = reconstructedImg

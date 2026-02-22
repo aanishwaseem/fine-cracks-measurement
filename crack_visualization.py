@@ -109,25 +109,17 @@ def visualize_crack_overlay(crack_analyser, alpha_mask=0.4, alpha_heatmap=0.6):
     # ------------------------------------------------------------------
     # 6. Plot
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    titles = [
-        "Crack Segmentation Overlay",
-        "Crack Skeleton Overlay",
-        "Crack Width Heatmap",
-    ]
-    images = [mask_overlay, skel_overlay, heat_overlay]
+    ax.imshow(heat_overlay, aspect="equal")
+    ax.set_title("Crack Width Heatmap", fontsize=14, fontweight="bold")
+    ax.axis("off")
 
-    for ax, title, img in zip(axes, titles, images):
-        ax.imshow(img, aspect="equal")
-        ax.set_title(title, fontsize=14, fontweight="bold")
-        ax.axis("off")
-
-    # Colorbar for the heatmap subplot
+    # Colorbar
     sm = plt.cm.ScalarMappable(cmap="jet",
                                norm=plt.Normalize(vmin=0, vmax=wmax_mm if wmax_mm > 0 else 1))
     sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes[2], fraction=0.046, pad=0.04)
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Crack Width (mm)", fontsize=12)
 
     plt.tight_layout()
