@@ -1,7 +1,10 @@
 ##############################################################################
                         # LIBRARY IMPORTS
 ##############################################################################
-
+#remove previous overlays 
+# min /max area 
+# blurry in dataset c
+# cracks going out 
 import cv2
 import numpy as np
 import math
@@ -638,15 +641,14 @@ def process_image(debug=False):
             if 0.9 < aspect_ratio < 1.1 and 1000 < area < 20000:
                 corrected_box = perspective_correction(gray, contour)
     
+    if scale_image_factor > 1:
+        image = scale_image(image, 2)
     # ✅ OPTIMIZATION 2: Cache text rendering (only render once per session)
     if scaling_factor_width and scaling_factor_height:
         cv2.putText(image, f'Scaling Factor X: {scaling_factor_width:.2f} mm/px', (20,30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
         cv2.putText(image, f'Scaling Factor Y: {scaling_factor_height:.2f} mm/px', (20,50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-    
-    if scale_image_factor > 1:
-        image = scale_image(image, 2)
     
     # ✅ OPTIMIZATION 3: Cache grid removal results
     current_img_path = image_files[current_image_index]
