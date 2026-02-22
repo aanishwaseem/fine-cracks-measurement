@@ -1,7 +1,10 @@
 ##############################################################################
                         # LIBRARY IMPORTS
 ##############################################################################
-
+#reduce dot size
+# confirm the original img's box is 100x100
+# show the min/max width
+#show the img number
 import cv2
 import numpy as np
 import math
@@ -12,6 +15,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 from tkinter import filedialog
 from crack_analysis import CrackAnalyse
+from crack_visualization import visualize_crack_overlay
 from utils import (getBinaryImage, resize_image, extract_deepcracks,
                    overlay_binary_images, make_tiles_fixed_size,
                    run_inference, join_tiles_after_inference,
@@ -19,6 +23,7 @@ from utils import (getBinaryImage, resize_image, extract_deepcracks,
 from remove_gridlines import remove_gridlines, intersect_masks
 from scale_image import scale_image
 from mask_tuning import MaskTuningUI
+from gen_ref_mask import get_reference_path, create_reference as gen_ref_create_reference
 ##############################################################################
                         # GLOBAL VARIABLES & CONSTANTS
 ##############################################################################
@@ -277,7 +282,8 @@ def convert_displacement_to_pixels(displacement_mm, scaling_factor):
 ##############################################################################
 def select_reference_image(initial_dir):
     """
-    Prompts user to select a reference image after folder selection.
+    [DEPRECATED] Manual reference image selection.
+    Kept for backward compatibility. The pipeline now auto-detects/generates references.
 
     Args:
         initial_dir (str): Folder path to start dialog in
@@ -307,15 +313,28 @@ def load_folder(folder_path):
     if not image_files:
         messagebox.showerror("Error", "No image files found in the specified folder.")
         return
-    # --- Select reference image ---
-    reference_image_path = select_reference_image(folder_path)
-    if reference_image_path is None:
-        return
 
-    reference_image = cv2.imread(reference_image_path, cv2.IMREAD_GRAYSCALE)
+    # --- Automatic reference image detection / generation ---
+    ref_path = get_reference_path(folder_path)
+
+    if os.path.isfile(ref_path):
+        print(f"[INFO] Reference image found: {ref_path}")
+    else:
+        print(f"[INFO] No reference image found for this dataset.")
+        print(f"[INFO] Launching reference image generator...")
+        result_path = gen_ref_create_reference(dataset_folder=folder_path)
+        if result_path is None:
+            messagebox.showerror("Error", "Reference image generation was cancelled or failed.")
+            return
+        ref_path = result_path
+        print(f"[INFO] Reference image created: {ref_path}")
+
+    reference_image = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
     if reference_image is None:
-        messagebox.showerror("Error", "Failed to load reference image.")
+        messagebox.showerror("Error", f"Failed to load reference image: {ref_path}")
         return
+    print(f"[INFO] Using reference image: {ref_path}")
+
     avg_sfx, avg_sfy = compute_average_scaling_factor_for_folder(folder_path)
     if avg_sfx is not None:
         scaling_factor_width = avg_sfx
@@ -338,6 +357,7 @@ def load_image():
         messagebox.showinfo("End", "All images in the folder have been processed.")
         return
     image_path = image_files[current_image_index]
+    cv2.setWindowTitle("Crack Detection", "Crack Detection - " + os.path.basename(image_path))
     img = cv2.imread(image_path)
     if img is None:
         messagebox.showerror("Error", f"Image at path '{image_path}' could not be loaded.")
@@ -735,6 +755,7 @@ def process_image(debug=False):
             binary_mask = merged
             _cracks_binary = get_binary_image_of_cracks(merged, threshold_value)
             _cracks_binary = intersect_masks(reference_image, _cracks_binary)
+            binary_mask = _cracks_binary
             crack_image_on_bright = draw_contours_on_img(image, _cracks_binary)
         else:
             print("[WARN] Parallel path incomplete — falling back to sequential detect_cracks_no_area()")
@@ -938,17 +959,14 @@ def on_mouse(event, x, y, flags, param):
                 mask_cropped = mask[y:y+h, x:x+w]
 
                 # --- Crop the **binary crack image** using the mask ---
+                # Extract only the crack pixels within the polygon region
                 selected_poly = cv2.bitwise_and(binary_mask[y:y+h, x:x+w],
                                                 binary_mask[y:y+h, x:x+w],
                                                 mask=mask_cropped)
 
-                # Convert to BGR for display (optional)
-                selected_poly_bgr = cv2.cvtColor(selected_poly, cv2.COLOR_GRAY2BGR)
-                # cv2.imshow("Selected Polygon", selected_poly_bgr)
-
-
                 # --- Analyze cracks in polygon ---
-                analyser = CrackAnalyse(predict_image_array=selected_poly_bgr, scaling_factor_x=scaling_factor_width,
+                # Pass grayscale binary mask directly (values: 0 for background, 255 for cracks)
+                analyser = CrackAnalyse(predict_image_array=selected_poly, scaling_factor_x=scaling_factor_width,
                                        scaling_factor_y=scaling_factor_height)
                 max_width = analyser.get_crack_max_width()
                 mean_width = analyser.get_crack_mean_width()
@@ -960,13 +978,16 @@ def on_mouse(event, x, y, flags, param):
                 feat_text2 = f"Max Width: {max_width_mm:.2f} mm"
                 feat_text3 = f"Mean Width: {mean_width_mm:.2f} mm"
 
-                cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-50),
+                cv2.putText(image, feat_text3, (polygon_points[0][0], polygon_points[0][1]-50),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-                cv2.imshow("Selected Polygon", selected_poly)
-                cv2.waitKey(0)
-                cv2.destroyWindow("Selected Polygon")
+                # cv2.imshow("Selected Polygon", selected_poly)
+                # cv2.waitKey(0)
+                # cv2.destroyWindow("Selected Polygon")
 
                 cv2.imshow("Crack Detection", image)
+                
+                # --- Visualize crack analysis ---
+                visualize_crack_overlay(analyser, alpha_mask=0.4, alpha_heatmap=0.6)
 
             polygon_mode = False
             polygon_points = []
@@ -998,9 +1019,9 @@ def on_mouse(event, x, y, flags, param):
                 #     reset_main_image(idx_img)
             clicked_points.append((adjusted_x, adjusted_y))
             if len(clicked_points) == 1:
-                cv2.circle(image, (adjusted_x, adjusted_y), 5, (0,0,255), -1)
+                cv2.circle(image, (adjusted_x, adjusted_y), 3, (0,0,255), -1)
             elif len(clicked_points) == 2:
-                cv2.circle(image, (adjusted_x, adjusted_y), 5, (0,0,255), -1)
+                cv2.circle(image, (adjusted_x, adjusted_y), 3, (0,0,255), -1)
                 cv2.line(image, clicked_points[0], (adjusted_x, adjusted_y), (0,255,0),2)
                 dist = calculate_distance(clicked_points[0], (adjusted_x, adjusted_y),
                                           scaling_factor_width, scaling_factor_height)
@@ -1051,9 +1072,12 @@ def main_loop():
         return
 
     cv2.namedWindow("Crack Detection",cv2.WINDOW_NORMAL)
-    window_w = 953
-    window_h = 341
+    cv2.setWindowTitle("Crack Detection", "Crack Detection - " + os.path.basename(image_files[current_image_index]))
+    window_h, window_w = image.shape[:2]
+    window_h = int(window_h/scale_image_factor)
+    window_w = int(window_w/scale_image_factor)
     cv2.resizeWindow("Crack Detection", window_w, window_h)
+
     cv2.setMouseCallback("Crack Detection", on_mouse)
 
     while True:

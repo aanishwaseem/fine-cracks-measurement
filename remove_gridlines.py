@@ -175,6 +175,8 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
             #we need to drive out more details so tile size should be reduced
             if (not make_reference_image):
                 tile_size = 300
+            if (img.shape[1] > 3000):
+                tile_size = img.shape[0]/2
             deepCrackImg = start_deepcrack_pipeline(img,
                                                     f"{deep_crack_dir_string}/input_tiles",
                                                     original_h=img.shape[0],

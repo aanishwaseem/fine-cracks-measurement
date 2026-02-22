@@ -1,4 +1,5 @@
 import os
+import re
 import cv2
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -6,8 +7,8 @@ from tkinter import filedialog, messagebox
 # Import YOUR actual functions
 from utils import getBinaryImage
 from remove_gridlines import remove_gridlines
-from crack import get_binary_image_of_cracks   # <-- change if needed
 from scale_image import scale_image
+from reference_image_editor import ReferenceImageEditor
 # ------------------------------
 # SETTINGS
 # ------------------------------
@@ -19,8 +20,39 @@ REFERENCE_FOLDER = "references"
 
 
 # ------------------------------
-# Select Image
+# Helpers
 # ------------------------------
+
+def sanitize_folder_name(folder_path):
+    """Convert a folder path to a safe filename string."""
+    name = os.path.basename(os.path.normpath(folder_path))
+    # Replace non-alphanumeric chars (except - and _) with underscore
+    return re.sub(r'[^\w\-]', '_', name)
+
+
+def get_reference_path(dataset_folder):
+    """Return the expected reference image path for a dataset folder."""
+    sanitized = sanitize_folder_name(dataset_folder)
+    return os.path.join(REFERENCE_FOLDER, f"{sanitized}_ref.png")
+
+
+def _pick_last_image(dataset_folder):
+    """Pick the last image file (alphabetically) from the dataset folder."""
+    extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+    image_files = sorted([
+        f for f in os.listdir(dataset_folder)
+        if f.lower().endswith(extensions)
+    ])
+    if not image_files:
+        return None
+    last_file = image_files[-1]
+    return os.path.join(dataset_folder, last_file)
+
+
+# ------------------------------
+# Select Image (kept for standalone/debug use)
+# ------------------------------
+
 def select_image():
     root = tk.Tk()
     root.withdraw()
@@ -32,74 +64,50 @@ def select_image():
 
     if not file_path:
         messagebox.showerror("Error", "No image selected.")
+        root.destroy()
         return None
 
+    root.destroy()
     return file_path
-def threshold_tuning_gui(binary_mask, initial_threshold=23, initial_alpha=0.68, initial_beta=12):
-    window_name = "Crack Threshold Tuning"
 
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 900, 700)
 
-    # Trackbars
-    cv2.createTrackbar("Threshold", window_name, initial_threshold, 255, lambda x: None)
-    cv2.createTrackbar("Alpha x100", window_name, int(initial_alpha * 100), 200, lambda x: None)
-    cv2.createTrackbar("Beta", window_name, int(initial_beta), 100, lambda x: None)
-
-    confirmed_values = None
-
-    while True:
-        threshold = cv2.getTrackbarPos("Threshold", window_name)
-        alpha = cv2.getTrackbarPos("Alpha x100", window_name) / 100.0
-        beta = cv2.getTrackbarPos("Beta", window_name)
-
-        # Generate preview
-        preview = get_binary_image_of_cracks(
-            binary_mask,
-            threshold=threshold,
-            alpha=alpha,
-            beta=beta
-        )
-
-        display = preview.copy()
-        display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-
-        info_text = f"Threshold={threshold}  Alpha={alpha:.2f}  Beta={beta}"
-        cv2.putText(display, info_text, (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1,
-                    (0, 255, 0), 2)
-
-        cv2.putText(display, "ENTER = Confirm | ESC = Cancel",
-                    (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                    (0, 255, 255), 2)
-
-        cv2.imshow(window_name, display)
-
-        key = cv2.waitKey(30) & 0xFF
-
-        if key == 13:  # ENTER
-            confirmed_values = (threshold, alpha, beta)
-            break
-        elif key == 27:  # ESC
-            break
-
-    cv2.destroyWindow(window_name)
-
-    return confirmed_values
 # ------------------------------
 # Create Reference
 # ------------------------------
-def create_reference():
-    image_path = select_image()
+
+def create_reference(dataset_folder=None, image_path=None):
+    """
+    Generate a reference image for a dataset folder.
+
+    Args:
+        dataset_folder: Path to dataset folder. Last image is auto-selected.
+        image_path:     (Optional) Explicit image path for debugging.
+
+    Returns:
+        str or None: Path to the saved reference image, or None on failure/cancel.
+    """
+    # Determine the image to use
     if image_path is None:
-        return
+        if dataset_folder is None:
+            # Fallback: manual selection (standalone mode)
+            image_path = select_image()
+            if image_path is None:
+                return None
+            dataset_folder = os.path.dirname(image_path)
+        else:
+            image_path = _pick_last_image(dataset_folder)
+            if image_path is None:
+                print(f"[ERROR] No image files found in {dataset_folder}")
+                return None
+            print(f"[INFO] Auto-selected last image: {os.path.basename(image_path)}")
 
     image = cv2.imread(image_path)
     if image is None:
-        print("Failed to load image.")
-        return
+        print(f"[ERROR] Failed to load image: {image_path}")
+        return None
+    
     image = scale_image(image, 2)
+    
     print("[INFO] Removing gridlines...")
     output_img, deepcrack_img_with_grids, mask = remove_gridlines(
         image,
@@ -118,48 +126,50 @@ def create_reference():
 
     if binary_mask is None:
         print("[ERROR] Binary mask generation failed.")
-        return
+        return None
 
-    print("[INFO] Opening threshold tuning window...")
+    print("[INFO] Opening Reference Image Editor...")
 
-    confirmed = threshold_tuning_gui(
-        binary_mask,
-        initial_threshold=THRESHOLD_VALUE,
-        initial_alpha=0.68,
-        initial_beta=12
+    # Launch the modern UI editor
+    editor = ReferenceImageEditor(
+        original_image=image,
+        binary_mask=binary_mask,
+        deepcrack_img=deepcrack_img_with_grids,
+        grid_mask=mask
     )
-
-    if confirmed is None:
-        print("[INFO] User cancelled threshold tuning.")
-        return
-
-    confirmed_threshold, confirmed_alpha, confirmed_beta = confirmed
-
-    cracks_binary = get_binary_image_of_cracks(
-        binary_mask,
-        threshold=confirmed_threshold,
-        alpha=confirmed_alpha,
-        beta=confirmed_beta
-    )
-
-    # Create references folder
+    
+    confirmed = editor.run()
+    
+    if not confirmed:
+        print("[INFO] User cancelled reference editor.")
+        return None
+    
+    final_reference = editor.get_final_reference()
+    
+    # Save using consistent naming based on dataset folder
     os.makedirs(REFERENCE_FOLDER, exist_ok=True)
+    save_path = get_reference_path(dataset_folder)
 
-    filename = os.path.basename(image_path)
-    name, _ = os.path.splitext(filename)
-
-    save_path = os.path.join(
-        REFERENCE_FOLDER,
-        f"{name[:16]}_reference.png"
-    )
-
-    cv2.imwrite(save_path, cracks_binary)
-
+    cv2.imwrite(save_path, final_reference)
     print(f"[SUCCESS] Reference saved at: {save_path}")
+    return save_path
 
 
 # ------------------------------
 # Run
 # ------------------------------
 if __name__ == "__main__":
-    create_reference()
+    import sys
+    if len(sys.argv) > 1:
+        # Usage: python gen_ref_mask.py <dataset_folder>
+        create_reference(dataset_folder=sys.argv[1])
+    else:
+        # Interactive: prompt for folder
+        root = tk.Tk()
+        root.withdraw()
+        folder = filedialog.askdirectory(title="Select Dataset Folder")
+        root.destroy()
+        if folder:
+            create_reference(dataset_folder=folder)
+        else:
+            print("[ERROR] No folder selected.")

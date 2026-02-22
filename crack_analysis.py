@@ -38,7 +38,7 @@ class CrackAnalyse(object):
         self.img = img
 
         # binary
-        img_bnr = (img > 20).astype(np.uint8)
+        img_bnr = (img > 0).astype(np.uint8)
 
         # opening and closing
         img_bnr = ndi.morphology.binary_closing(img_bnr)
@@ -187,7 +187,7 @@ def Hilditch_skeleton(binary_image):
     return skel
 
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
     # skeleton compare
     # skeleton_compare('0633', True, 'skl_cp_0633')
     # skeleton_compare('0203', True, 'skl_cp_0203')
@@ -209,7 +209,7 @@ if __name__ == '__main__':
     # crack_feature_compare('0035', True, 'feature_cp_0035')
     # crack_feature_compare('0605', True, 'feature_cp_0605')
 
-    crack_recogniation_compare('001', True, 'recognition_cp_001')
-    crack_recogniation_compare('002', True, 'recognition_cp_002')
-    crack_recogniation_compare('003', True, 'recognition_cp_003')
-    crack_recogniation_compare('004', True, 'recognition_cp_004')
+    # crack_recogniation_compare('001', True, 'recognition_cp_001')
+    # crack_recogniation_compare('002', True, 'recognition_cp_002')
+    # crack_recogniation_compare('003', True, 'recognition_cp_003')
+    # crack_recogniation_compare('004', True, 'recognition_cp_004')
