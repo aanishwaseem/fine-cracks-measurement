@@ -30,6 +30,10 @@ from gen_ref_mask import get_reference_path, create_reference as gen_ref_create_
 ##############################################################################
                         # GLOBAL VARIABLES & CONSTANTS
 ##############################################################################
+
+user_prefered_window_h = None
+user_prefered_window_w = None
+
 make_reference_image = False
 NUM_SCALING_IMAGES = 13  
 image_files = []
@@ -1110,12 +1114,17 @@ def main_loop():
         messagebox.showerror("Error", "No image loaded. Please check the folder path.")
         return
 
-    cv2.namedWindow("Crack Detection",cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Crack Detection",cv2.WINDOW_KEEPRATIO)
     cv2.setWindowTitle("Crack Detection", "Crack Detection - " + os.path.basename(image_files[current_image_index]))
-    window_h, window_w = image.shape[:2]
-    window_h = int(window_h/scale_image_factor)
-    window_w = int(window_w/scale_image_factor)
+    if (user_prefered_window_w is None and user_prefered_window_h is None):
+        window_h, window_w = image.shape[:2]
+        window_h = int(window_h/scale_image_factor)
+        window_w = int(window_w/scale_image_factor)
+    else:
+        window_h = user_prefered_window_h
+        window_w = user_prefered_window_w
     cv2.resizeWindow("Crack Detection", window_w, window_h)
+    print(f"window_h: {window_h}, window_w: {window_w}")
 
     cv2.setMouseCallback("Crack Detection", on_mouse)
 

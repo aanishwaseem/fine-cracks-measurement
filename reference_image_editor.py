@@ -44,11 +44,11 @@ def get_binary_image_of_cracks(gen_binary_mask, threshold=23, alpha=0.68, beta=1
     _, binary_image = cv2.threshold(brightened_image, threshold, 255, cv2.THRESH_BINARY_INV)
     binary_image = 255 - binary_image  # invert black <-> white
     
-    # Apply thickness: erode white region to expand black crack pixels
+    # Apply thickness: dilate to expand white crack pixels (make cracks thicker)
     if thickness > 0:
         kernel_size = 2 * thickness + 1
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        binary_image = cv2.erode(binary_image, kernel, iterations=1)
+        binary_image = cv2.dilate(binary_image, kernel, iterations=1)
     
     return binary_image
 

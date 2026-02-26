@@ -174,9 +174,9 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
             print(f"[INFO] Proceeding with grid lines removal with mask thickness: {THICKNESS}...")
             #we need to drive out more details so tile size should be reduced
             if (not make_reference_image):
-                tile_size = 300
-            if (img.shape[1] > 3000):
-                tile_size = img.shape[0]/2
+                tile_size = 400
+            # if (img.shape[1] > 2700):
+            #     tile_size = img.shape[0]/2
             deepCrackImg = start_deepcrack_pipeline(img,
                                                     f"{deep_crack_dir_string}/input_tiles",
                                                     original_h=img.shape[0],
@@ -210,18 +210,27 @@ def remove_gridlines(img, parent_folder, mask_thickness=2, activate_grid_mask_re
     return output, deepCrackImg,mask
 
 def create_mask_pipeline(deepcrack_crack_image, thickness, run_line_segmentator=False):
+    line_seg_success = False
+    img_from_line_segmentor = None
     if (run_line_segmentator):
         save_dir=f"{line_segment_dir_string}/dataset/pinhole"
         move_img_to_input_folder(deepcrack_crack_image, save_dir)
         try:
-            run_line_segmentor()
+            seg_result = run_line_segmentor()
+            if seg_result:
+                output_path = f"{line_segment_dir_string}/output/pinhole/1.png"
+                if os.path.exists(output_path):
+                    _,img_from_line_segmentor = extract_and_hough_filter_tol(output_path,3,3,thickness)
+                    line_seg_success = True
+                else:
+                    print("[WARN] Line segmentor output file not found. Skipping line segmentor.")
+            else:
+                print("[WARN] Line segmentor returned failure. Skipping line segmentor.")
         except Exception as e:
-            print(f"[ERROR] Line segementor error: {e}")
-            return None
-    
-        _,img_from_line_segmentor = extract_and_hough_filter_tol(f"{line_segment_dir_string}/output/pinhole/1.png",3,3,thickness)
+            print(f"[WARN] Line segmentor error: {e}. Skipping line segmentor.")
+
     hough_mask = make_mask_from_deepcrack_img(deepcrack_crack_image, thickness)
-    if (run_line_segmentator):
+    if line_seg_success and img_from_line_segmentor is not None:
         output = merge_masks(img_from_line_segmentor, hough_mask)
     else:
         output = hough_mask

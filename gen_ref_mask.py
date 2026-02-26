@@ -109,13 +109,17 @@ def create_reference(dataset_folder=None, image_path=None):
     image = scale_image(image, 2)
     
     print("[INFO] Removing gridlines...")
-    output_img, deepcrack_img_with_grids, mask = remove_gridlines(
+    gridline_result = remove_gridlines(
         image,
         os.path.dirname(image_path),
         GRID_MASK_THICKNESS,
         activate_grid_mask_recreation=ACTIVATE_GRID_MASK_RECREATION,
         make_reference_image=MAKE_REFERENCE_IMAGE
     )
+    if gridline_result is None:
+        print("[ERROR] Grid lines removal failed. Cannot create reference.")
+        return None
+    output_img, deepcrack_img_with_grids, mask = gridline_result
 
     print("[INFO] Running Deep Crack Extraction...")
     binary_mask = getBinaryImage(
