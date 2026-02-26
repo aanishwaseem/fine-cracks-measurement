@@ -368,7 +368,6 @@ def load_image():
         messagebox.showinfo("End", "All images in the folder have been processed.")
         return
     image_path = image_files[current_image_index]
-    cv2.setWindowTitle("Crack Detection", "Crack Detection - " + os.path.basename(image_path))
     img = cv2.imread(image_path)
     if img is None:
         messagebox.showerror("Error", f"Image at path '{image_path}' could not be loaded.")
@@ -582,28 +581,6 @@ def detect_cracks_no_area_fallback(image_no_grid, show_binary=True):
     cv2.drawContours(crack_image, contours, -1, (0,0,255), 2)
 
     return crack_image, binary_image
-
-def loading_window():
-    window_name = "Crack Detection"
-
-    # Create a black image
-    loading_img = np.zeros((400, 600, 3), dtype=np.uint8)
-
-    # Put text "LOADING" in the center
-    cv2.putText(
-        loading_img,
-        "IMG LOADING...",
-        (50, 200),                  # position
-        cv2.FONT_HERSHEY_SIMPLEX,    # font
-        2,                           # font scale
-        (255, 255, 255),             # color (white)
-        3,                           # thickness
-        cv2.LINE_AA                  # line type
-    )
-
-    # Show in a named window (create if doesn't exist)
-    cv2.imshow(window_name, loading_img)
-    cv2.waitKey(1)  # Small delay to refresh window
 
 ##############################################################################
                         # OPTIMIZATION CACHING
@@ -934,6 +911,7 @@ def on_key_press(event):
 def on_mouse(event, x, y, flags, param):
     global mouse_x, mouse_y, clicked_points, is_zoomed, drag_start, drag_end
     global distance_mode, distance_text, compute_cell_area_mode, polygon_mode, polygon_points, highlighted_cell
+    window_title = "Crack Detection - " + os.path.basename(image_files[current_image_index])
 
     if polygon_mode:
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -949,7 +927,7 @@ def on_mouse(event, x, y, flags, param):
             cv2.circle(image, (adjusted_x, adjusted_y), 4, (255,0,0), -1)
             if len(polygon_points) > 1:
                 cv2.line(image, polygon_points[-2], polygon_points[-1], (255,0,0), 2)
-            cv2.imshow("Crack Detection", image)
+            cv2.imshow(window_title, image)
             return
         elif event == cv2.EVENT_RBUTTONDOWN:
             if len(polygon_points) >= 3:
@@ -999,34 +977,56 @@ def on_mouse(event, x, y, flags, param):
                 width_map = analyser.img_skl   # float map; 0 where no crack
                 nonzero_vals = width_map[width_map > 0]
                 if nonzero_vals.size > 0:
-                    # Max position
-                    max_row, max_col = np.unravel_index(np.argmax(width_map), width_map.shape)
-                    max_pt = (x + max_col, y + max_row)   # offset back to full-image coords
+                    avg_scale = (scaling_factor_width + scaling_factor_height) / 2
 
-                    # Min (non-zero) position
-                    min_val = nonzero_vals.min()
+                    # --- Discard outlier min/max values before locating markers ---
+                    global_min = nonzero_vals.min()
+                    global_max = nonzero_vals.max()
+                    # Only discard if there are more than 2 distinct values;
+                    # edge case: if all values equal min or max, keep everything.
+                    if global_min < global_max and np.unique(nonzero_vals).size > 2:
+                        filtered_vals = nonzero_vals[(nonzero_vals > global_min) & (nonzero_vals < global_max)]
+                        inlier_mask = (width_map > global_min) & (width_map < global_max)
+                    else:
+                        filtered_vals = nonzero_vals
+                        inlier_mask = width_map > 0
+                    # Fall back to all non-zero values if filtering removed everything
+                    if filtered_vals.size == 0:
+                        filtered_vals = nonzero_vals
+                        inlier_mask = width_map > 0
+
+                    # Max position (within inliers)
+                    filtered_map = np.where(inlier_mask, width_map, 0.0)
+                    max_row, max_col = np.unravel_index(np.argmax(filtered_map), filtered_map.shape)
+                    max_val = filtered_map[max_row, max_col]
+                    max_pt = (x + max_col, y + max_row)   # offset back to full-image coords
+                    max_val_mm = max_val * avg_scale
+
+                    # Min (non-zero, within inliers) position
+                    min_val = filtered_vals.min()
                     min_row, min_col = np.unravel_index(
-                        np.argmin(np.where(width_map > 0, width_map, np.inf)), width_map.shape
+                        np.argmin(np.where(inlier_mask, width_map, np.inf)), width_map.shape
                     )
                     min_pt = (x + min_col, y + min_row)
+                    min_val_mm = min_val * avg_scale
 
                     # Draw on both image and crack_image_on_bright so the marks persist
                     for canvas in [img for img in [image, crack_image_on_bright] if img is not None]:
                         # Max → cyan circle + label
                         cv2.circle(canvas, max_pt, 10, (255, 255, 0), 2)
-                        cv2.putText(canvas, f"Max {max_width_mm:.2f}mm",
+                        cv2.putText(canvas, f"Max {max_val_mm:.2f}mm",
                                     (max_pt[0] + 12, max_pt[1]),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
                         # Min → magenta circle + label
                         cv2.circle(canvas, min_pt, 10, (255, 0, 255), 2)
-                        cv2.putText(canvas, f"Min {min_val * (scaling_factor_width + scaling_factor_height) / 2:.2f}mm",
+                        cv2.putText(canvas, f"Min {min_val_mm:.2f}mm",
                                     (min_pt[0] + 12, min_pt[1]),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
 
-                    print(f"Max width at image coords: {max_pt}")
-                    print(f"Min width at image coords: {min_pt}")
+                    print(f"Max width (outliers removed) at image coords: {max_pt} → {max_val_mm:.2f} mm")
+                    print(f"Min width (outliers removed) at image coords: {min_pt} → {min_val_mm:.2f} mm")
 
-                cv2.imshow("Crack Detection", image)
+                cv2.imshow(window_title, image)
                 
                 # --- Visualize crack analysis ---
                 # visualize_crack_overlay(analyser, alpha_mask=0.4, alpha_heatmap=0.6)
@@ -1113,9 +1113,8 @@ def main_loop():
     if image is None:
         messagebox.showerror("Error", "No image loaded. Please check the folder path.")
         return
-
-    cv2.namedWindow("Crack Detection",cv2.WINDOW_KEEPRATIO)
-    cv2.setWindowTitle("Crack Detection", "Crack Detection - " + os.path.basename(image_files[current_image_index]))
+    window_title = "Crack Detection - " + os.path.basename(image_files[current_image_index])
+    cv2.namedWindow(window_title,cv2.WINDOW_NORMAL)
     if (user_prefered_window_w is None and user_prefered_window_h is None):
         window_h, window_w = image.shape[:2]
         window_h = int(window_h/scale_image_factor)
@@ -1123,10 +1122,11 @@ def main_loop():
     else:
         window_h = user_prefered_window_h
         window_w = user_prefered_window_w
-    cv2.resizeWindow("Crack Detection", window_w, window_h)
-    print(f"window_h: {window_h}, window_w: {window_w}")
 
-    cv2.setMouseCallback("Crack Detection", on_mouse)
+
+    cv2.resizeWindow(window_title, window_w, window_h)
+
+    cv2.setMouseCallback(window_title, on_mouse)
 
     while True:
         h, w = image.shape[:2]
@@ -1184,17 +1184,8 @@ def main_loop():
                 displacement_x=displacement_x,
             )
 
-        cv2.imshow("Crack Detection", display_image)
-        # win_w = cv2.getWindowImageRect("Crack Detection")[2]
-        # win_h = cv2.getWindowImageRect("Crack Detection")[3]
+        cv2.imshow(window_title, display_image)
 
-        # display_resized = cv2.resize(
-        #     display_image,
-        #     (win_w, win_h),
-        #     interpolation=cv2.INTER_LINEAR
-        # )
-
-        # cv2.imshow("Crack Detection", display_resized)
         key = cv2.waitKey(1) & 0xFF
        
         if key == ord('n') and not _image_loading:
