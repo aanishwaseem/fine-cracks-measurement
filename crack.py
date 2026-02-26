@@ -1081,7 +1081,7 @@ def on_mouse(event, x, y, flags, param):
                     (0, 0, 255),
                     2
                 )
-            cv2.imshow("Crack Detection", image)
+            cv2.imshow(window_title, image)
             return
 
         if drag_start is None:
