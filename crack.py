@@ -34,6 +34,9 @@ from gen_ref_mask import get_reference_path, create_reference as gen_ref_create_
 user_prefered_window_h = None
 user_prefered_window_w = None
 
+_clean_image = None
+_clean_crack_image_on_bright = None
+
 make_reference_image = False
 NUM_SCALING_IMAGES = 13  
 image_files = []
@@ -42,7 +45,7 @@ original_image = None
 reference_image = None
 image = None
 crack_image_on_bright = None
-zoom_factor = 5  
+zoom_factor = 10  
 is_zoomed = False
 mouse_x, mouse_y = 0, 0
 distance_mode = False
@@ -751,6 +754,14 @@ def process_image(debug=False):
 
         _crack_detection_cache[crack_cache_key] = crack_image_on_bright
     
+    # Save clean copies for later restoration (space key)
+    global _clean_image, _clean_crack_image_on_bright
+    _clean_image = image.copy()
+    if crack_image_on_bright is not None:
+        _clean_crack_image_on_bright = crack_image_on_bright.copy()
+    else:
+        _clean_crack_image_on_bright = None
+
     if crack_image_on_bright is not None and debug:
         cv2.imshow("Cracks Only", crack_image_on_bright)
         cv2.waitKey(0)
@@ -1110,6 +1121,7 @@ def main_loop():
     global grid_mask_thickness, activate_grid_mask_recreation
     global contrast_value, threshold_value
     global reference_image, binary_mask
+    global clicked_points, _clean_image, _clean_crack_image_on_bright
     if image is None:
         messagebox.showerror("Error", "No image loaded. Please check the folder path.")
         return
@@ -1239,6 +1251,17 @@ def main_loop():
                     print("[INFO] Reference editor cancelled.")
             else:
                 print("[WARN] No binary mask available yet. Process an image first.")
+        elif key == ord(' '):
+            # Clear all drawn overlays (distance, polygons, min/max markers)
+            if _clean_image is not None:
+                image = _clean_image.copy()
+            if _clean_crack_image_on_bright is not None:
+                crack_image_on_bright = _clean_crack_image_on_bright.copy()
+            distance_text = ""
+            clicked_points = []
+            polygon_points = []
+            highlighted_cell = None
+            print("[✓] Cleared all drawn overlays.")
         elif key == ord('q'):
             break
 
