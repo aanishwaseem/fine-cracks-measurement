@@ -413,17 +413,20 @@ class ReferenceImageEditor:
             self.final_reference = self.current_ref
             self.confirmed = True
             self.root.quit()
+            self.root.destroy()
     
     def _on_confirm(self):
         """Confirm and close the editor."""
         self.final_reference = self.current_ref
         self.confirmed = True
         self.root.quit()
+        self.root.destroy()
     
     def _on_cancel(self):
         """Cancel and close the editor."""
         self.confirmed = False
         self.root.quit()
+        self.root.destroy()
     
     def run(self):
         """
@@ -434,36 +437,30 @@ class ReferenceImageEditor:
         """
         self.root = tk.Tk()
         self.root.title("Reference Image Editor")
-        self.root.geometry("900x900")
+        self.root.geometry("1300x700")
         
         # ═══════════════════════════════════════════════════════════════════════
-        #  TOP ACTION BAR (Save & Confirm buttons, right-aligned)
+        #  MAIN HORIZONTAL LAYOUT: Left = images, Right = controls
         # ═══════════════════════════════════════════════════════════════════════
-        action_bar = ttk.Frame(self.root)
-        action_bar.pack(fill=tk.X, padx=10, pady=(5, 0))
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        ttk.Button(action_bar, text="\u2715 Cancel", width=12, command=self._on_cancel).pack(side=tk.RIGHT, padx=3)
-        ttk.Button(action_bar, text="\u2713 Confirm (No Save)", width=18, command=self._on_confirm).pack(side=tk.RIGHT, padx=3)
-        ttk.Button(action_bar, text="\U0001f4be Save & Confirm", width=18, command=self._on_save).pack(side=tk.RIGHT, padx=3)
-        
-        # ═══════════════════════════════════════════════════════════════════════
-        #  DISPLAY AREA — vertically stacked
-        # ═══════════════════════════════════════════════════════════════════════
-        display_frame = ttk.Frame(self.root)
-        display_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # ── LEFT COLUMN: Image canvases (stacked vertically) ─────────────────
+        left_col = ttk.Frame(main_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Top: Original Image
-        top_frame = ttk.LabelFrame(display_frame, text="Original Image", padding=5)
+        top_frame = ttk.LabelFrame(left_col, text="Original Image", padding=5)
         top_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 3))
         
-        self.canvas_left = tk.Canvas(top_frame, width=850, height=280, bg="gray20")
+        self.canvas_left = tk.Canvas(top_frame, width=850, height=300, bg="gray20")
         self.canvas_left.pack(fill=tk.BOTH, expand=True)
         
         # Bottom: Reference Binary Mask (editable)
-        bottom_frame = ttk.LabelFrame(display_frame, text="Reference Binary Mask (click to paint)", padding=5)
+        bottom_frame = ttk.LabelFrame(left_col, text="Reference Binary Mask (click to paint)", padding=5)
         bottom_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(3, 0))
         
-        self.canvas_right = tk.Canvas(bottom_frame, width=850, height=280, bg="gray20")
+        self.canvas_right = tk.Canvas(bottom_frame, width=850, height=300, bg="gray20")
         self.canvas_right.pack(fill=tk.BOTH, expand=True)
         
         # Bind paint events to right canvas
@@ -473,89 +470,94 @@ class ReferenceImageEditor:
         self.canvas_right.bind("<Motion>", self._on_canvas_hover)
         self.canvas_right.bind("<Leave>", self._on_canvas_leave)
         
-        # ═══════════════════════════════════════════════════════════════════════
-        #  CONTROL PANEL (Bottom)
-        # ═══════════════════════════════════════════════════════════════════════
-        control_frame = ttk.LabelFrame(self.root, text="Controls", padding=10)
-        control_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=10)
+        # ── RIGHT COLUMN: Controls panel ─────────────────────────────────────
+        right_col = ttk.LabelFrame(main_frame, text="Controls", padding=10, width=320)
+        right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        right_col.pack_propagate(False)
         
-        # Row 1: Thickness, Alpha
-        row1 = ttk.Frame(control_frame)
-        row1.pack(fill=tk.X, pady=5)
-        
-        ttk.Label(row1, text="Thickness:", width=12).pack(side=tk.LEFT, padx=5)
+        # --- Thickness ---
+        ttk.Label(right_col, text="Thickness:").pack(anchor=tk.W, padx=5, pady=(8, 0))
+        thickness_row = ttk.Frame(right_col)
+        thickness_row.pack(fill=tk.X, padx=5, pady=2)
         self.thickness_var = tk.IntVar(value=self.thickness)
-        thickness_scale = ttk.Scale(
-            row1, from_=0, to=20, variable=self.thickness_var,
+        ttk.Scale(
+            thickness_row, from_=0, to=20, variable=self.thickness_var,
             command=self._on_thickness_change, orient=tk.HORIZONTAL
-        )
-        thickness_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.thickness_label = ttk.Label(row1, text=str(self.thickness), width=4)
-        self.thickness_label.pack(side=tk.LEFT, padx=5)
-        
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.thickness_label = ttk.Label(thickness_row, text=str(self.thickness), width=4)
+        self.thickness_label.pack(side=tk.RIGHT)
         self.thickness_var.trace("w", lambda *args: self.thickness_label.config(text=str(self.thickness_var.get())))
         
-        ttk.Label(row1, text="Alpha (x0.01):", width=15).pack(side=tk.LEFT, padx=5)
+        # --- Alpha ---
+        ttk.Label(right_col, text="Alpha (x0.01):").pack(anchor=tk.W, padx=5, pady=(8, 0))
+        alpha_row = ttk.Frame(right_col)
+        alpha_row.pack(fill=tk.X, padx=5, pady=2)
         self.alpha_var = tk.IntVar(value=int(self.alpha * 100))
-        alpha_scale = ttk.Scale(
-            row1, from_=0, to=200, variable=self.alpha_var,
+        ttk.Scale(
+            alpha_row, from_=0, to=200, variable=self.alpha_var,
             command=self._on_alpha_change, orient=tk.HORIZONTAL
-        )
-        alpha_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.alpha_label = ttk.Label(row1, text=f"{self.alpha:.2f}", width=6)
-        self.alpha_label.pack(side=tk.LEFT, padx=5)
-        
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.alpha_label = ttk.Label(alpha_row, text=f"{self.alpha:.2f}", width=6)
+        self.alpha_label.pack(side=tk.RIGHT)
         self.alpha_var.trace("w", lambda *args: self.alpha_label.config(text=f"{self.alpha_var.get()/100:.2f}"))
         
-        # Row 2: Beta, Brush Size
-        row2 = ttk.Frame(control_frame)
-        row2.pack(fill=tk.X, pady=5)
-        
-        ttk.Label(row2, text="Beta:", width=12).pack(side=tk.LEFT, padx=5)
+        # --- Beta ---
+        ttk.Label(right_col, text="Beta:").pack(anchor=tk.W, padx=5, pady=(8, 0))
+        beta_row = ttk.Frame(right_col)
+        beta_row.pack(fill=tk.X, padx=5, pady=2)
         self.beta_var = tk.IntVar(value=self.beta)
-        beta_scale = ttk.Scale(
-            row2, from_=0, to=100, variable=self.beta_var,
+        ttk.Scale(
+            beta_row, from_=0, to=100, variable=self.beta_var,
             command=self._on_beta_change, orient=tk.HORIZONTAL
-        )
-        beta_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.beta_label = ttk.Label(row2, text=str(self.beta), width=4)
-        self.beta_label.pack(side=tk.LEFT, padx=5)
-        
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.beta_label = ttk.Label(beta_row, text=str(self.beta), width=4)
+        self.beta_label.pack(side=tk.RIGHT)
         self.beta_var.trace("w", lambda *args: self.beta_label.config(text=str(self.beta_var.get())))
         
-        ttk.Label(row2, text="Brush Size:", width=15).pack(side=tk.LEFT, padx=5)
+        # --- Brush Size ---
+        ttk.Label(right_col, text="Brush Size:").pack(anchor=tk.W, padx=5, pady=(8, 0))
+        brush_row = ttk.Frame(right_col)
+        brush_row.pack(fill=tk.X, padx=5, pady=2)
         self.brush_var = tk.IntVar(value=self.brush_size)
-        brush_scale = ttk.Scale(
-            row2, from_=1, to=30, variable=self.brush_var,
+        ttk.Scale(
+            brush_row, from_=1, to=30, variable=self.brush_var,
             command=self._on_brush_size_change, orient=tk.HORIZONTAL
-        )
-        brush_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.brush_label = ttk.Label(row2, text=str(self.brush_size), width=4)
-        self.brush_label.pack(side=tk.LEFT, padx=5)
-        
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.brush_label = ttk.Label(brush_row, text=str(self.brush_size), width=4)
+        self.brush_label.pack(side=tk.RIGHT)
         self.brush_var.trace("w", lambda *args: self.brush_label.config(text=str(self.brush_var.get())))
         
-        # Row 3: Brush Mode & Buttons
-        row3 = ttk.Frame(control_frame)
-        row3.pack(fill=tk.X, pady=5)
+        # --- Separator ---
+        ttk.Separator(right_col, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=5, pady=10)
         
-        ttk.Label(row3, text="Brush Mode:", width=12).pack(side=tk.LEFT, padx=5)
-        
+        # --- Brush Mode ---
+        ttk.Label(right_col, text="Brush Mode:").pack(anchor=tk.W, padx=5, pady=(0, 4))
+        brush_mode_row = ttk.Frame(right_col)
+        brush_mode_row.pack(fill=tk.X, padx=5, pady=2)
         self.brush_white_btn = ttk.Button(
-            row3, text="Paint White", width=14,
+            brush_mode_row, text="Paint White", width=14,
             command=lambda: self._on_brush_mode_change("white")
         )
-        self.brush_white_btn.pack(side=tk.LEFT, padx=3)
-        
+        self.brush_white_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.brush_black_btn = ttk.Button(
-            row3, text="\u25b6 Paint Black", width=14,
+            brush_mode_row, text="\u25b6 Paint Black", width=14,
             command=lambda: self._on_brush_mode_change("black")
         )
-        self.brush_black_btn.pack(side=tk.LEFT, padx=3)
+        self.brush_black_btn.pack(side=tk.LEFT)
         
-        ttk.Button(row3, text="↶ Undo", width=10, command=self._on_undo).pack(side=tk.LEFT, padx=3)
-        ttk.Button(row3, text="⟲ Reset", width=10, command=self._on_reset).pack(side=tk.LEFT, padx=3)
+        # --- Undo / Reset ---
+        edit_row = ttk.Frame(right_col)
+        edit_row.pack(fill=tk.X, padx=5, pady=8)
+        ttk.Button(edit_row, text="↶ Undo", width=14, command=self._on_undo).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(edit_row, text="⟲ Reset", width=14, command=self._on_reset).pack(side=tk.LEFT)
         
+        # --- Separator ---
+        ttk.Separator(right_col, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=5, pady=10)
+        
+        # --- Action buttons (bottom of right column) ---
+        ttk.Button(right_col, text="\U0001f4be Save & Confirm", width=28, command=self._on_save).pack(padx=5, pady=3)
+        ttk.Button(right_col, text="\u2713 Confirm (No Save)", width=28, command=self._on_confirm).pack(padx=5, pady=3)
+        ttk.Button(right_col, text="\u2715 Cancel", width=28, command=self._on_cancel).pack(padx=5, pady=3)
 
         # Initial display
         self._refresh_display()

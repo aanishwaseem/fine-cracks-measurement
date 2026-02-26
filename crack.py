@@ -25,6 +25,7 @@ from utils import (getBinaryImage, resize_image, extract_deepcracks,
 from remove_gridlines import remove_gridlines, intersect_masks
 from scale_image import scale_image
 from mask_tuning import MaskTuningUI
+from reference_image_editor import ReferenceImageEditor
 from gen_ref_mask import get_reference_path, create_reference as gen_ref_create_reference
 ##############################################################################
                         # GLOBAL VARIABLES & CONSTANTS
@@ -978,25 +979,53 @@ def on_mouse(event, x, y, flags, param):
                 mean_width = analyser.get_crack_mean_width()
                 max_width_mm = analyser.get_crack_max_width_mm()
                 mean_width_mm = analyser.get_crack_mean_width_mm()
-                print(f"Max Crack Width: {max_width:.2f} px ({max_width_mm:.2f} mm)")
-                print(f"Mean Crack Width: {mean_width:.2f} px ({mean_width_mm:.2f} mm)")
+                # print(f"Max Crack Width: {max_width:.2f} px ({max_width_mm:.2f} mm)")
+                # print(f"Mean Crack Width: {mean_width:.2f} px ({mean_width_mm:.2f} mm)")
                 # --- Display features on image ---
                 feat_text2 = f"Max Width: {max_width_mm:.2f} mm"
                 feat_text3 = f"Mean Width: {mean_width_mm:.2f} mm"
 
-                cv2.putText(image, feat_text3, (polygon_points[0][0], polygon_points[0][1]-50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+                # cv2.putText(image, feat_text3, (polygon_points[0][0], polygon_points[0][1]-50),
+                #             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
                 
-                cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-35),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-                # cv2.imshow("Selected Polygon", selected_poly)
-                # cv2.waitKey(0)
-                # cv2.destroyWindow("Selected Polygon")
+                # cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-35),
+                #             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+                # --- Mark max / min crack width positions on the image ---
+                width_map = analyser.img_skl   # float map; 0 where no crack
+                nonzero_vals = width_map[width_map > 0]
+                if nonzero_vals.size > 0:
+                    # Max position
+                    max_row, max_col = np.unravel_index(np.argmax(width_map), width_map.shape)
+                    max_pt = (x + max_col, y + max_row)   # offset back to full-image coords
+
+                    # Min (non-zero) position
+                    min_val = nonzero_vals.min()
+                    min_row, min_col = np.unravel_index(
+                        np.argmin(np.where(width_map > 0, width_map, np.inf)), width_map.shape
+                    )
+                    min_pt = (x + min_col, y + min_row)
+
+                    # Draw on both image and crack_image_on_bright so the marks persist
+                    for canvas in [img for img in [image, crack_image_on_bright] if img is not None]:
+                        # Max → cyan circle + label
+                        cv2.circle(canvas, max_pt, 10, (255, 255, 0), 2)
+                        cv2.putText(canvas, f"Max {max_width_mm:.2f}mm",
+                                    (max_pt[0] + 12, max_pt[1]),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+                        # Min → magenta circle + label
+                        cv2.circle(canvas, min_pt, 10, (255, 0, 255), 2)
+                        cv2.putText(canvas, f"Min {min_val * (scaling_factor_width + scaling_factor_height) / 2:.2f}mm",
+                                    (min_pt[0] + 12, min_pt[1]),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
+
+                    print(f"Max width at image coords: {max_pt}")
+                    print(f"Min width at image coords: {min_pt}")
 
                 cv2.imshow("Crack Detection", image)
                 
                 # --- Visualize crack analysis ---
-                visualize_crack_overlay(analyser, alpha_mask=0.4, alpha_heatmap=0.6)
+                # visualize_crack_overlay(analyser, alpha_mask=0.4, alpha_heatmap=0.6)
 
             polygon_mode = False
             polygon_points = []
@@ -1076,6 +1105,7 @@ def main_loop():
     global polygon_mode, polygon_points, displacement_x  # Added displacement_x to globals
     global grid_mask_thickness, activate_grid_mask_recreation
     global contrast_value, threshold_value
+    global reference_image, binary_mask
     if image is None:
         messagebox.showerror("Error", "No image loaded. Please check the folder path.")
         return
@@ -1192,14 +1222,23 @@ def main_loop():
             displacement_x = simpledialog.askfloat("Grid Displacement", "Enter horizontal displacement (in pixels):", initialvalue=0)
             print(f"Grid displacement set to: {displacement_x} pixels")
         elif key == ord('s'):
-            ui = MaskTuningUI(reference_image, binary_mask)
-            apply_changes = ui.run()
-            final_mask = ui.get_final_mask()
-            threshold_value = ui.get_confirmed_threshold()
-            crack_image_on_bright = draw_contours_on_img(image, final_mask)
-            cv2.imshow("Crack Detection", crack_image_on_bright)
-
-            print(f"Apply changes: {apply_changes}")
+            if binary_mask is not None:
+                editor = ReferenceImageEditor(image, binary_mask)
+                confirmed = editor.run()
+                if confirmed:
+                    new_ref = editor.get_final_reference()
+                    if new_ref is not None:
+                        reference_image = new_ref
+                        print("[INFO] Reference image updated from editor.")
+                        # Re-run crack detection with the new reference
+                        _cracks_binary = get_binary_image_of_cracks(binary_mask, threshold_value)
+                        _cracks_binary = intersect_masks(reference_image, _cracks_binary)
+                        binary_mask = _cracks_binary
+                        crack_image_on_bright = draw_contours_on_img(image, _cracks_binary)
+                else:
+                    print("[INFO] Reference editor cancelled.")
+            else:
+                print("[WARN] No binary mask available yet. Process an image first.")
         elif key == ord('q'):
             break
 
