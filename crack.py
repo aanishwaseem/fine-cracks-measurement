@@ -1217,6 +1217,15 @@ def on_mouse(event, x, y, flags, param):
                     _pad         = 10   # padding from top / right edge
                     _row_gap     = 22   # vertical spacing between legend rows
 
+                    # Erase previous legend by restoring clean pixels in the top-right zone.
+                    # Zone height: enough for 2 rows (2 * _row_gap) + padding.
+                    # Zone width: generous fixed budget (300 px).
+                    _legend_zone_h = _pad + 2 * _row_gap + 10
+                    _legend_zone_w = min(300, _img_w)
+                    if _clean_image is not None:
+                        image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w] = \
+                            _clean_image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w]
+
                     _legend_rows = [
                         (COLOR_MAX, f"- {max_val_mm*2:.1f} mm (max)"),
                     ]
