@@ -19,10 +19,24 @@ DARKGREEN = '#0b6e48'
 GRAY = '#cccccc'
 
 class CrackAnalyse(object):
-    def __init__(self, predict_image_file=None, predict_image_array=None, scaling_factor_x=1.0, scaling_factor_y=1.0):
+    def __init__(self, predict_image_file=None, predict_image_array=None,
+                 scaling_factor_x=1.0, scaling_factor_y=1.0,
+                 boundary_margin=10, polygon_mask=None):
+        """
+        Parameters
+        ----------
+        boundary_margin : int
+            Number of pixels to erode inward from the polygon/image boundary.
+            Crack-width measurements within this margin are excluded from
+            statistics to avoid edge-clipping artifacts.
+        polygon_mask : ndarray (uint8/bool), optional
+            Binary mask of the polygon region (non-zero = inside polygon).
+            If None, the full image boundary is used instead.
+        """
         # load
         self.scaling_factor_x = scaling_factor_x
         self.scaling_factor_y = scaling_factor_y
+        self.boundary_margin = boundary_margin
         if predict_image_file and predict_image_array is None:
             raise ValueError('Please provide either predict_image_file or predict_image_array.')
         if predict_image_array is not None:
@@ -45,6 +59,25 @@ class CrackAnalyse(object):
         img_bnr = ndi.morphology.binary_opening(img_bnr)
 
         self.img_bnr = img_bnr
+
+        # ----------------------------------------------------------------
+        # Build a "valid interior" mask by eroding the polygon (or image
+        # boundary) inward by `boundary_margin` pixels.  Only skeleton
+        # pixels inside this mask are used for width statistics, so that
+        # artificially narrow widths at the polygon edge are excluded.
+        # ----------------------------------------------------------------
+        if polygon_mask is not None:
+            roi_mask = polygon_mask.astype(bool)
+        else:
+            roi_mask = np.ones(img.shape[:2], dtype=bool)
+
+        if boundary_margin > 0:
+            erode_struct = ndi.generate_binary_structure(2, 1)  # 4-connected
+            self.interior_mask = ndi.binary_erosion(
+                roi_mask, structure=erode_struct, iterations=boundary_margin
+            )
+        else:
+            self.interior_mask = roi_mask
 
         # segmentation
         img_labels, num_labels = ndi.label(img_bnr)
@@ -100,6 +133,12 @@ class CrackAnalyse(object):
 
     def get_prediction(self):
         return self.img
+
+    def get_width_map_interior(self):
+        """Return skeleton width map masked to the interior region only.
+        Pixels within `boundary_margin` of the polygon edge are zeroed out
+        so they don't pollute min/Q1/max statistics."""
+        return np.where(self.interior_mask, self.img_skl, 0.0)
 
     def get_segmentation(self):
         return self.img_sgt

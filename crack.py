@@ -660,7 +660,7 @@ def process_image(debug=False):
         #   DeepCrack → models/DeepCrack/codes/input_tiles
         # There is zero shared state, so both can run simultaneously.
 
-        _TILE_SIZE = 512
+        _TILE_SIZE = 300
 
         # Check whether grid removal result is already cached
         if cache_key in _grid_removal_cache:
@@ -922,7 +922,7 @@ def on_key_press(event):
 def on_mouse(event, x, y, flags, param):
     global mouse_x, mouse_y, clicked_points, is_zoomed, drag_start, drag_end
     global distance_mode, distance_text, compute_cell_area_mode, polygon_mode, polygon_points, highlighted_cell
-    window_title = "Crack Detection - " + os.path.basename(image_files[current_image_index])
+    window_title = "Crack Detection"
 
     if polygon_mode:
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -946,7 +946,7 @@ def on_mouse(event, x, y, flags, param):
                 area = compute_polygon_area(polygon_points)
                 text = f"Poly Area: {area:.2f} mm^2" if (scaling_factor_width and scaling_factor_height) else f"Poly Area: {area:.2f} px"
                 print(text)
-                cv2.putText(image, text, (polygon_points[0][0], polygon_points[0][1]-10),
+                cv2.putText(image, text, (polygon_points[0][0], polygon_points[0][1]-50),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0),2)
 
                     # --- Create mask from polygon ---
@@ -967,7 +967,8 @@ def on_mouse(event, x, y, flags, param):
                 # --- Analyze cracks in polygon ---
                 # Pass grayscale binary mask directly (values: 0 for background, 255 for cracks)
                 analyser = CrackAnalyse(predict_image_array=selected_poly, scaling_factor_x=scaling_factor_width,
-                                       scaling_factor_y=scaling_factor_height)
+                                       scaling_factor_y=scaling_factor_height,
+                                       boundary_margin=10, polygon_mask=mask_cropped)
                 max_width = analyser.get_crack_max_width()
                 mean_width = analyser.get_crack_mean_width()
                 max_width_mm = analyser.get_crack_max_width_mm()
@@ -984,58 +985,263 @@ def on_mouse(event, x, y, flags, param):
                 # cv2.putText(image, feat_text2, (polygon_points[0][0], polygon_points[0][1]-35),
                 #             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
+                # --- Debug: visualise what the crack analyser produced ---
+                dbg_input = selected_poly.copy()
+                dbg_binary = (analyser.img_bnr * 255).astype(np.uint8)
+                dbg_skeleton_raw = analyser.img_skl.copy()
+                dbg_skeleton_raw = (dbg_skeleton_raw / (dbg_skeleton_raw.max() + 1e-9) * 255).astype(np.uint8)
+                dbg_skeleton_raw = cv2.applyColorMap(dbg_skeleton_raw, cv2.COLORMAP_JET)
+                dbg_skeleton_raw[analyser.img_skl == 0] = 0  # keep background black
+
+                dbg_interior = analyser.interior_mask.astype(np.uint8) * 255
+
+                dbg_width_interior = analyser.get_width_map_interior().copy()
+                dbg_width_interior_vis = (dbg_width_interior / (dbg_width_interior.max() + 1e-9) * 255).astype(np.uint8)
+                dbg_width_interior_vis = cv2.applyColorMap(dbg_width_interior_vis, cv2.COLORMAP_JET)
+                dbg_width_interior_vis[dbg_width_interior == 0] = 0
+
+                # cv2.imshow("DBG: Skeleton (raw, color=width)", dbg_skeleton_raw)
+           
                 # --- Mark max / min crack width positions on the image ---
-                width_map = analyser.img_skl   # float map; 0 where no crack
+                width_map = analyser.get_width_map_interior()  # excludes boundary artifacts
                 nonzero_vals = width_map[width_map > 0]
                 if nonzero_vals.size > 0:
                     avg_scale = (scaling_factor_width + scaling_factor_height) / 2
 
-                    # --- Discard outlier min/max values before locating markers ---
-                    global_min = nonzero_vals.min()
-                    global_max = nonzero_vals.max()
-                    # Only discard if there are more than 2 distinct values;
-                    # edge case: if all values equal min or max, keep everything.
-                    if global_min < global_max and np.unique(nonzero_vals).size > 2:
-                        filtered_vals = nonzero_vals[(nonzero_vals > global_min) & (nonzero_vals < global_max)]
-                        inlier_mask = (width_map > global_min) & (width_map < global_max)
-                    else:
-                        filtered_vals = nonzero_vals
-                        inlier_mask = width_map > 0
+                    # --- IQR-based outlier removal (Tukey fence) ---
+                    q25 = np.percentile(nonzero_vals, 25)
+                    q75 = np.percentile(nonzero_vals, 75)
+                    iqr = q75 - q25
+
+                    lower_fence = q25 - 1.5 * iqr
+                    upper_fence = q75 + 1.5 * iqr
+
+                    inlier_mask = (width_map >= lower_fence) & (width_map <= upper_fence) & (width_map > 0)
+                    filtered_vals = nonzero_vals[(nonzero_vals >= lower_fence) & (nonzero_vals <= upper_fence)]
+
                     # Fall back to all non-zero values if filtering removed everything
                     if filtered_vals.size == 0:
                         filtered_vals = nonzero_vals
                         inlier_mask = width_map > 0
 
-                    # Max position (within inliers)
-                    filtered_map = np.where(inlier_mask, width_map, 0.0)
-                    max_row, max_col = np.unravel_index(np.argmax(filtered_map), filtered_map.shape)
-                    max_val = filtered_map[max_row, max_col]
-                    max_pt = (x + max_col, y + max_row)   # offset back to full-image coords
+                    # Max position — always use GLOBAL max (not inlier-filtered)
+                    global_max_row, global_max_col = np.unravel_index(
+                        np.argmax(width_map), width_map.shape
+                    )
+                    max_val = width_map[global_max_row, global_max_col]
+                    max_pt = (x + global_max_col, y + global_max_row)
                     max_val_mm = max_val * avg_scale
 
-                    # Min (non-zero, within inliers) position
-                    min_val = filtered_vals.min()
-                    min_row, min_col = np.unravel_index(
-                        np.argmin(np.where(inlier_mask, width_map, np.inf)), width_map.shape
-                    )
-                    min_pt = (x + min_col, y + min_row)
-                    min_val_mm = min_val * avg_scale
+                    CIRCLE_RADIUS = 10  # must match radius used in cv2.circle below
 
-                    # Draw on both image and crack_image_on_bright so the marks persist
-                    for canvas in [img for img in [image, crack_image_on_bright] if img is not None]:
-                        # Max → cyan circle + label
-                        cv2.circle(canvas, max_pt, 10, (255, 255, 0), 2)
-                        cv2.putText(canvas, f"Max {max_val_mm:.2f}mm",
-                                    (max_pt[0] + 12, max_pt[1]),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
-                        # Min → magenta circle + label
-                        cv2.circle(canvas, min_pt, 10, (255, 0, 255), 2)
-                        cv2.putText(canvas, f"Min {min_val_mm:.2f}mm",
-                                    (min_pt[0] + 12, min_pt[1]),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
+                    def circles_overlap(pt1, pt2, radius):
+                        dist = np.sqrt((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)
+                        return dist < 2 * radius
 
-                    print(f"Max width (outliers removed) at image coords: {max_pt} → {max_val_mm:.2f} mm")
-                    print(f"Min width (outliers removed) at image coords: {min_pt} → {min_val_mm:.2f} mm")
+                    # --- Build polygon-edge distance map (in cropped coords) ---
+                    # Any candidate whose circle touches the polygon edge is rejected.
+                    poly_edge = cv2.Canny(mask_cropped, 100, 200)  # edges of the polygon mask
+                    poly_edge_dist = cv2.distanceTransform(
+                        cv2.bitwise_not(poly_edge), cv2.DIST_L2, 5
+                    )  # distance from each pixel to nearest polygon edge
+
+                    def circle_touches_polygon_edge(coord_row, coord_col, radius):
+                        """True if the circle around (col, row) in cropped coords
+                        intersects the polygon boundary."""
+                        return poly_edge_dist[coord_row, coord_col] < radius
+
+                    # --- Percentile bounds for min search ---
+                    q1_val = np.percentile(filtered_vals, 25)
+                    q2_val = np.percentile(filtered_vals, 50)
+
+                    # --- Pre-sort min candidates once (reused across retry iterations) ---
+                    q2_5_val = np.percentile(filtered_vals, 50)
+                    search_mask = inlier_mask & (width_map >= q1_val) & (width_map <= q2_5_val)
+                    search_coords = np.argwhere(search_mask)
+
+                    # If no pixels fall in [Q1, Q2.5] range, fall back to all inliers
+                    if search_coords.size == 0:
+                        search_mask = inlier_mask
+                        search_coords = np.argwhere(search_mask)
+
+                    search_widths_all = width_map[search_mask]
+                    sort_order = np.argsort(search_widths_all)
+                    search_coords_sorted = search_coords[sort_order]
+                    search_widths_sorted = search_widths_all[sort_order]
+
+                    # --- Iterative exclusion with progressive tightening ---
+                    # Start at P60.  If no min candidate qualifies, raise the
+                    # threshold by 5-percentile steps toward max, shrinking the
+                    # exclusion zone each time.  After P100, do a final pass
+                    # with NO exclusion zone (only max circle + polygon edge).
+                    min_pt = None
+                    min_val = None
+                    exclusion_percentiles = list(range(60, 101, 5))  # 60, 65, … 100
+
+                    for excl_pct in exclusion_percentiles:
+                        if excl_pct >= 100:
+                            # 100th percentile = only the single max pixel excluded
+                            excl_threshold = max_val + 1e-9
+                        else:
+                            excl_threshold = np.percentile(filtered_vals, excl_pct)
+
+                        # Build exclusion points for this threshold
+                        _excl_mask = inlier_mask & (width_map >= excl_threshold)
+                        _excl_coords = np.argwhere(_excl_mask)
+                        _excl_pts = [(x + c[1], y + c[0]) for c in _excl_coords]
+                        print(f"[INFO] Exclusion zone (P{excl_pct}): {len(_excl_pts)} pixels (width >= {excl_threshold:.2f})")
+
+                        # Helper: check overlap with current exclusion set
+                        def _overlaps_excl(candidate_pt, radius, excl_pts=_excl_pts):
+                            for ep in excl_pts:
+                                if circles_overlap(candidate_pt, ep, radius):
+                                    return True
+                            return False
+
+                        # Walk sorted candidates (narrowest first)
+                        for coord, val in zip(search_coords_sorted, search_widths_sorted):
+                            candidate_pt = (x + coord[1], y + coord[0])
+
+                            # Rule 1: Near polygon edge → always rejected
+                            if circle_touches_polygon_edge(coord[0], coord[1], 2 * CIRCLE_RADIUS):
+                                continue
+
+                            # Rule 2: Overlaps max circle → rejected
+                            if circles_overlap(max_pt, candidate_pt, CIRCLE_RADIUS):
+                                continue
+
+                            # Rule 3: Overlaps any exclusion circle at current threshold
+                            if _overlaps_excl(candidate_pt, CIRCLE_RADIUS):
+                                continue
+
+                            min_pt = candidate_pt
+                            min_val = val
+                            break
+
+                        if min_pt is not None:
+                            print(f"[INFO] Min point found at exclusion P{excl_pct}")
+                            break
+                        else:
+                            print(f"[INFO] No min candidate at P{excl_pct}, raising exclusion threshold...")
+
+                    # --- Final fallback: widen search to global max, no exclusion zone ---
+                    # Only max circle + polygon edge rejection remain.
+                    if min_pt is None:
+                        print("[INFO] P100 exhausted — widening min search to global width range (no exclusion zone)...")
+                        # Include ALL nonzero skeleton pixels as candidates
+                        global_search_mask = width_map > 0
+                        global_search_coords = np.argwhere(global_search_mask)
+                        if global_search_coords.size > 0:
+                            global_widths = width_map[global_search_mask]
+                            g_order = np.argsort(global_widths)
+                            global_coords_sorted = global_search_coords[g_order]
+                            global_widths_sorted = global_widths[g_order]
+
+                            for coord, val in zip(global_coords_sorted, global_widths_sorted):
+                                candidate_pt = (x + coord[1], y + coord[0])
+
+                                if circle_touches_polygon_edge(coord[0], coord[1], 2 * CIRCLE_RADIUS):
+                                    continue
+                                if circles_overlap(max_pt, candidate_pt, CIRCLE_RADIUS):
+                                    continue
+
+                                min_pt = candidate_pt
+                                min_val = val
+                                print(f"[INFO] Min point found in global fallback")
+                                break
+
+                        if min_pt is None:
+                            print("[WARN] Polygon too small to fit both circles.")
+                    # --- Draw skeleton heatmap on crack_image_on_bright ---
+                    if crack_image_on_bright is not None:
+                        # Build a JET colormap overlay of the skeleton width map
+                        skl_raw = analyser.img_skl  # full skeleton (not interior-masked)
+                        skl_norm = (skl_raw / (skl_raw.max() + 1e-9) * 255).astype(np.uint8)
+                        skl_color = cv2.applyColorMap(skl_norm, cv2.COLORMAP_JET)
+                        skl_color[skl_raw == 0] = 0  # keep background transparent
+
+                        # Dilate skeleton for better visibility
+                        skl_dilated_mask = cv2.dilate(
+                            (skl_raw > 0).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1
+                        )
+                        # Re-apply colormap on dilated version
+                        skl_dilated = cv2.dilate(skl_norm, np.ones((3, 3), np.uint8), iterations=1)
+                        skl_color_dilated = cv2.applyColorMap(skl_dilated, cv2.COLORMAP_JET)
+                        skl_color_dilated[skl_dilated_mask == 0] = 0
+
+                        # Paste the colored skeleton onto crack_image_on_bright in the crop region
+                        roi = crack_image_on_bright[y:y+h, x:x+w]
+                        paste_mask = skl_dilated_mask > 0
+                        # roi[paste_mask] = skl_color_dilated[paste_mask]
+                        alpha = 0.8   # increase toward 1.0 for more visible skeleton
+
+                        roi[paste_mask] = cv2.addWeighted(
+                            roi[paste_mask],
+                            1 - alpha,
+                            skl_color_dilated[paste_mask],
+                            alpha,
+                            0
+                        )
+                    # --- Always draw max circle (global max) ---
+                    COLOR_MAX = (255, 255, 0)    # yellow
+                    COLOR_MIN = (255, 0, 255)    # magenta
+                    cv2.circle(image, max_pt, CIRCLE_RADIUS, COLOR_MAX, 1)
+                    print(f"Max width: {max_val_mm*2:.2f} mm at {max_pt}")
+
+                    # --- Draw min circle if found ---
+                    min_width_low = 0.0
+                    min_width_high = 0.0
+                    if min_pt is not None:
+                        min_val_mm = min_val * avg_scale
+
+                        cv2.circle(image, min_pt, CIRCLE_RADIUS, COLOR_MIN, 1)
+
+                        min_width_low = q1_val * 2
+                        min_width_high = q2_val * 2
+                        if min_width_high > max_width:
+                            p10_val = np.percentile(filtered_vals, 10)
+                            p5_val = np.percentile(filtered_vals, 5)
+                            min_width_low = p5_val
+                            min_width_high = p10_val
+
+                        print(f"Min width range: {min_width_low:.2f} mm → {min_width_high:.2f} mm")
+                    else:
+                        print(f"[WARN] No min point — polygon too small for two circles.")
+
+                    # --- Top-right legend ---
+                    _img_h, _img_w = image.shape[:2]
+                    _font        = cv2.FONT_HERSHEY_SIMPLEX
+                    _font_scale  = 0.55
+                    _thickness   = 1
+                    _line_len    = 22   # length of the colored dash
+                    _pad         = 10   # padding from top / right edge
+                    _row_gap     = 22   # vertical spacing between legend rows
+
+                    _legend_rows = [
+                        (COLOR_MAX, f"- {max_val_mm*2:.1f} mm (max)"),
+                    ]
+                    if min_pt is not None:
+                        _legend_rows.append(
+                            (COLOR_MIN, f"- {min_width_low:.1f}-{min_width_high:.1f} mm (min)")
+                        )
+
+                    # Pre-compute widths to right-align
+                    _row_widths = []
+                    for _clr, _txt in _legend_rows:
+                        (_tw, _th), _ = cv2.getTextSize(_txt, _font, _font_scale, _thickness)
+                        _row_widths.append(_tw)
+
+                    for _i, ((_clr, _txt), _tw) in enumerate(zip(_legend_rows, _row_widths)):
+                        _ty = _pad + _th + _i * _row_gap
+                        _tx = _img_w - _tw - _pad
+                        # Draw thick colored dash then label
+                        cv2.line(image,
+                                 (_tx - 5, _ty - _th // 2),
+                                 (_tx - 5 + _line_len, _ty - _th // 2),
+                                 _clr, 2)
+                        cv2.putText(image, _txt,
+                                    (_tx + _line_len - 15, _ty),
+                                    _font, _font_scale, _clr, _thickness, cv2.LINE_AA)
 
                 cv2.imshow(window_title, image)
                 
@@ -1072,9 +1278,9 @@ def on_mouse(event, x, y, flags, param):
                 #     reset_main_image(idx_img)
             clicked_points.append((adjusted_x, adjusted_y))
             if len(clicked_points) == 1:
-                cv2.circle(image, (adjusted_x, adjusted_y), 3, (0,0,255), -1)
+                cv2.circle(image, (adjusted_x, adjusted_y), 2, (0,0,255), -1)
             elif len(clicked_points) == 2:
-                cv2.circle(image, (adjusted_x, adjusted_y), 3, (0,0,255), -1)
+                cv2.circle(image, (adjusted_x, adjusted_y), 2, (0,0,255), -1)
                 cv2.line(image, clicked_points[0], (adjusted_x, adjusted_y), (0,255,0),2)
                 dist = calculate_distance(clicked_points[0], (adjusted_x, adjusted_y),
                                           scaling_factor_width, scaling_factor_height)
@@ -1125,7 +1331,7 @@ def main_loop():
     if image is None:
         messagebox.showerror("Error", "No image loaded. Please check the folder path.")
         return
-    window_title = "Crack Detection - " + os.path.basename(image_files[current_image_index])
+    window_title = "Crack Detection"
     cv2.namedWindow(window_title,cv2.WINDOW_NORMAL)
     if (user_prefered_window_w is None and user_prefered_window_h is None):
         window_h, window_w = image.shape[:2]

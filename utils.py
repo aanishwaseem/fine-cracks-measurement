@@ -75,7 +75,7 @@ def getBinaryImage(img_gray, deepcrack_img_with_grids, mask):
     """
     print("[INFO] Extracting all possible cracks (PARALLEL mode)...")
     
-    tile_size = 512
+    tile_size = 400
     
     # Prepare UNet tiles (lightweight, can do upfront)
     make_tiles_fixed_size(img_gray, tile_size=tile_size)
