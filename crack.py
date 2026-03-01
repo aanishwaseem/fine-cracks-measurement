@@ -65,7 +65,7 @@ highlighted_cell = None
 disable_cache = False  # Set to True to disable caching
 displacement_x = 0.0 
 binary_mask = None
-
+org_binary_mask = None
 contrast_value = 0.08
 threshold_value = 23
 scale_image_factor = 2
@@ -521,13 +521,14 @@ def draw_contours_on_img(orginal_image, cracks_binary_image):
     return crack_image
 
 def detect_cracks_no_area(image_no_grid, deepcrack_img, mask):
-    global binary_mask
+    global binary_mask, org_binary_mask
 
     testimg = getBinaryImage(image_no_grid,deepcrack_img, mask)
     if testimg is None:
         print("[ERROR] Falling back to manual crack extraction.")
         return detect_cracks_no_area_fallback(image_no_grid)
     binary_mask = testimg
+    org_binary_mask = testimg
     cracks_binary = get_binary_image_of_cracks(binary_mask, threshold_value)
     cracks_binary = intersect_masks(reference_image, cracks_binary)
     binary_mask = cracks_binary
@@ -660,7 +661,7 @@ def process_image(debug=False):
         #   DeepCrack → models/DeepCrack/codes/input_tiles
         # There is zero shared state, so both can run simultaneously.
 
-        _TILE_SIZE = 300
+        _TILE_SIZE = 290
 
         # Check whether grid removal result is already cached
         if cache_key in _grid_removal_cache:
@@ -742,8 +743,9 @@ def process_image(debug=False):
         # ── STEP 5: Merge results ─────────────────────────────────────────────
         if _unet_data["status"] == "complete" and _inpaint_data["result"] is not None:
             merged = overlay_binary_images(_unet_data["result"], _inpaint_data["result"])
-            global binary_mask
+            global binary_mask, org_binary_mask
             binary_mask = merged
+            org_binary_mask = merged
             _cracks_binary = get_binary_image_of_cracks(merged, threshold_value)
             _cracks_binary = intersect_masks(reference_image, _cracks_binary)
             binary_mask = _cracks_binary
@@ -1076,7 +1078,7 @@ def on_mouse(event, x, y, flags, param):
                     # with NO exclusion zone (only max circle + polygon edge).
                     min_pt = None
                     min_val = None
-                    exclusion_percentiles = list(range(60, 101, 5))  # 60, 65, … 100
+                    exclusion_percentiles = list(range(50, 101, 5))  # 60, 65, … 100
 
                     for excl_pct in exclusion_percentiles:
                         if excl_pct >= 100:
@@ -1211,17 +1213,17 @@ def on_mouse(event, x, y, flags, param):
                     # --- Top-right legend ---
                     _img_h, _img_w = image.shape[:2]
                     _font        = cv2.FONT_HERSHEY_SIMPLEX
-                    _font_scale  = 0.55
-                    _thickness   = 1
-                    _line_len    = 22   # length of the colored dash
-                    _pad         = 10   # padding from top / right edge
-                    _row_gap     = 22   # vertical spacing between legend rows
+                    _font_scale  = 1.4
+                    _thickness   = 2
+                    _line_len    = 40   # length of the colored dash
+                    _pad         = 16   # padding from top / right edge
+                    _row_gap     = 48   # vertical spacing between legend rows
 
                     # Erase previous legend by restoring clean pixels in the top-right zone.
                     # Zone height: enough for 2 rows (2 * _row_gap) + padding.
-                    # Zone width: generous fixed budget (300 px).
-                    _legend_zone_h = _pad + 2 * _row_gap + 10
-                    _legend_zone_w = min(300, _img_w)
+                    # Zone width: generous fixed budget (600 px).
+                    _legend_zone_h = _pad + 2 * _row_gap + 20
+                    _legend_zone_w = min(600, _img_w)
                     if _clean_image is not None:
                         image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w] = \
                             _clean_image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w]
@@ -1449,16 +1451,17 @@ def main_loop():
             displacement_x = simpledialog.askfloat("Grid Displacement", "Enter horizontal displacement (in pixels):", initialvalue=0)
             print(f"Grid displacement set to: {displacement_x} pixels")
         elif key == ord('s'):
-            if binary_mask is not None:
-                editor = ReferenceImageEditor(image, binary_mask)
+            if reference_image is not None:
+                editor = ReferenceImageEditor(image, reference_image)
                 confirmed = editor.run()
                 if confirmed:
                     new_ref = editor.get_final_reference()
+                    cv2.imwrite("reftence_testing_after_s.png", new_ref)
                     if new_ref is not None:
                         reference_image = new_ref
                         print("[INFO] Reference image updated from editor.")
                         # Re-run crack detection with the new reference
-                        _cracks_binary = get_binary_image_of_cracks(binary_mask, threshold_value)
+                        _cracks_binary = get_binary_image_of_cracks(org_binary_mask, threshold_value)
                         _cracks_binary = intersect_masks(reference_image, _cracks_binary)
                         binary_mask = _cracks_binary
                         crack_image_on_bright = draw_contours_on_img(image, _cracks_binary)
