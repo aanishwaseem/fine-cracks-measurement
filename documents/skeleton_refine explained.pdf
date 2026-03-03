@@ -1,0 +1,122 @@
+# Graph-Based Skeleton Pruning for Robust Crack Width Measurement in Concrete Surface Imagery
+
+---
+
+## Abstract
+
+Quantitative assessment of crack width in concrete structures relies on the accurate extraction of a crack's medial axis — a single-pixel-wide centre line, commonly called a skeleton, from which perpendicular width measurements are derived. In practice, skeletonisation algorithms applied to binary crack masks produce noisy results: spurious branches, disconnected fragments, and Y-shaped forks that do not correspond to the physical crack geometry. These artefacts propagate directly into width measurements, causing systematic overestimates of crack extent and unreliable identification of the widest and narrowest points along the crack path. This paper presents a graph-based skeleton refinement pipeline that transforms a raw, noisy skeleton into a clean, single-path representation of the dominant crack, enabling reproducible and accurate width characterisation. The method operates in five sequential stages: pixel classification, graph construction, connected-component filtering, iterative branch pruning, and longest-path extraction.
+
+---
+
+## 1. Introduction
+
+Structural health monitoring of reinforced concrete relies heavily on crack width as a damage indicator. Guidelines such as ACI 224R and Eurocode 2 specify crack width thresholds beyond which durability is compromised. Manual measurement with crack comparators or optical microscopes is time-consuming, operator-dependent, and impractical for large photographic datasets. Automated image-based measurement offers a scalable alternative, but its accuracy depends critically on the quality of the extracted crack skeleton.
+
+Binary crack segmentation — whether produced by a convolutional neural network such as UNet or DeepCrack, or by classical thresholding — yields a filled region of white pixels representing the crack. To measure width, it is necessary to reduce this region to its medial axis. Standard skeletonisation methods, including Zhang-Suen thinning and morphological erosion, reliably produce thin centre lines. However, they also produce topological artefacts: short branches growing out of junctions where the crack boundary is irregular, disconnected fragments arising from noise or low-confidence segmentation, and complex branching trees where the physical crack is a simple curve. If these artefacts are not removed, width measurements taken along the skeleton include spurious values from branch tips and disconnected segments, corrupting statistics such as maximum width, minimum width, and mean width along the crack.
+
+The skeleton refinement module described here addresses this problem by converting the pixel-level skeleton into an abstract graph, applying principled filtering rules, and reconstructing a clean binary image from the surviving graph structure. The resulting skeleton faithfully represents the dominant crack path and supports reliable width measurement without manual intervention.
+
+---
+
+## 2. Problem Statement
+
+Given a binary input image **S** in which non-zero pixels form the raw skeleton of a segmented crack, the goal is to produce a refined skeleton **S'** such that:
+
+1. **S'** is a connected, single-path (or near-single-path) representation of the primary crack.
+2. Short branches caused by segmentation noise or boundary irregularities are absent from **S'**.
+3. Small disconnected fragments unrelated to the main crack are absent from **S'**.
+4. The spatial extent and curvature of the dominant crack are preserved without distortion.
+5. If the input skeleton carries width values at each pixel (a width-map skeleton), those values are preserved at surviving pixels.
+
+The solution must be fully automatic — it must not require manual selection of the crack path or manual specification of which branches to remove — and must be robust to variation in crack morphology, image resolution, and segmentation quality.
+
+---
+
+## 3. Methodology
+
+### 3.1 Pixel Classification by Connectivity Degree
+
+The first step characterises the local topology of every skeleton pixel. For each non-zero pixel at position (r, c), its **degree** is defined as the number of its eight-connected neighbours that are also non-zero skeleton pixels. This is computed efficiently by convolving the binary skeleton with a 3×3 all-ones kernel (excluding the centre) and multiplying the result element-wise with the skeleton mask, yielding an integer degree map in a single pass.
+
+Pixels are then partitioned into three classes based on degree:
+
+- **Endpoint** (degree = 1): a pixel with exactly one skeleton neighbour. Endpoints mark the termini of crack paths and branch tips.
+- **Path pixel** (degree = 2): a pixel with exactly two skeleton neighbours. Path pixels form the interior of smooth crack segments and carry no branching information.
+- **Junction pixel** (degree ≥ 3): a pixel with three or more skeleton neighbours. Junctions mark locations where the skeleton branches, corresponding to either true crack bifurcations or, more commonly, topological artefacts near irregular crack boundaries.
+
+This classification encodes the full topological structure of the skeleton in a compact set of labelled pixel positions and forms the basis for graph construction.
+
+### 3.2 Graph Construction
+
+The skeleton is abstracted into a graph **G = (V, E)** in which nodes **V** represent topologically significant pixels (endpoints and junctions) and edges **E** represent the chains of path pixels connecting them. This representation eliminates the redundancy of path pixels — which carry no branching information — and reduces the skeleton to its essential topological structure regardless of crack length or image resolution.
+
+Graph construction proceeds as follows. First, a node is created for every endpoint and junction pixel identified in the classification step. Second, starting from each node, the algorithm traces outward along adjacent path pixels using a depth-first walk. The walk follows the unique locally-connected path (degree-2 pixels have only one forward neighbour) until it reaches another node pixel or a dead end. The sequence of path pixels traversed constitutes an edge, which is stored with its full pixel list and its length (pixel count). Edge tracing is gated by a visited-pixel set to ensure each path pixel belongs to exactly one edge.
+
+A special case arises for isolated loops — closed chains of degree-2 pixels with no endpoints or junctions, which can appear when segmentation artifacts produce small circular or oval shapes. These are detected as pixels not assigned during the main tracing pass and are handled by inserting synthetic endpoint nodes at the loop's two extremities, converting the loop into a regular edge.
+
+The resulting graph compactly represents the skeleton's topology: a straight crack with no branches produces a single edge connecting two endpoints; a crack with one branch produces a Y-shaped graph with one junction node and three endpoint nodes connected by three edges; a highly fragmented segmentation produces a disconnected graph with multiple isolated components.
+
+### 3.3 Connected Component Filtering
+
+Segmentation imperfections — noise pixels, low-confidence predictions near the crack boundary, or small isolated patches of dark concrete texture that resemble cracks — frequently produce multiple disconnected skeleton fragments in addition to the main crack. If all fragments are included in width analysis, statistics are corrupted by measurements taken on irrelevant regions of the image.
+
+The graph is partitioned into its connected components using breadth-first search. For each component, the total pixel count is computed as the sum of all node positions and all interior edge pixels. The component with the greatest pixel count is retained as the dominant crack; all others are discarded. This heuristic is valid under the assumption that the primary crack spans a larger continuous region than any noise artefact, which holds reliably in the high-resolution concrete images processed by this pipeline.
+
+### 3.4 Iterative Branch Pruning
+
+After connected-component filtering, the surviving graph represents the main crack but may still contain short branches emanating from junction nodes. These branches arise from three sources: (i) rounding artefacts at the crack boundary where the skeletonisation algorithm follows multiple equally valid paths; (ii) small secondary cracks or surface features that merge with the primary crack at a junction; and (iii) segmentation over-detection at locations of high local contrast such as aggregate boundaries or repaired surface sections. In all three cases, the branches are shorter than the main crack path and distort width statistics if left in place.
+
+Pruning is performed iteratively. In each iteration, the longest edge in the current graph is identified and its length is recorded as the reference length **L_max**. A pruning threshold **T** is computed as:
+
+**T = max(L_min_abs, floor(L_max × r))**
+
+where **L_min_abs** is an absolute minimum branch length (default: 10 pixels) and **r** is a proportional threshold (default: 0.15, meaning branches shorter than 15% of the longest edge are candidates for removal). The use of **max** ensures that the threshold adapts to the overall scale of the skeleton: for short cracks the absolute threshold dominates, preventing over-pruning; for long cracks the proportional threshold dominates, removing branches that are locally short relative to the crack length.
+
+All leaf nodes — nodes whose current degree is exactly 1 — are identified. For each leaf, its single incident edge is retrieved and its length is compared against **T**. If the edge is shorter than the threshold, it is removed along with the leaf node. If the opposite endpoint of the removed edge now has no remaining edges, it is also removed. This operation is repeated in a single pass over all current leaves. The outer loop continues until no further removals occur, at which point the skeleton has converged to a state where all remaining branches exceed the threshold. The iterative design is necessary because removing one branch can expose a previously interior node as a new leaf, which may itself be the endpoint of a short branch that should be pruned.
+
+### 3.5 Longest-Path Extraction
+
+After pruning, the graph may still contain residual forks if the crack has genuine bifurcations that exceed the pruning threshold or if two pruning-resistant branches remain. Width measurement along a branching path is poorly defined — it is not clear which direction to follow at a junction — and produces ambiguous minimum- and maximum-width locations. To resolve this, an optional final step reduces the graph to a single non-branching path representing the most prominent crack trajectory.
+
+The longest path is found using the double breadth-first search algorithm, which is optimal for trees and near-trees. The algorithm operates in two passes. The first pass performs BFS from an arbitrary start node and identifies the farthest reachable node **u**, measured by total edge-pixel count along the path. The second pass performs BFS from **u** and identifies the farthest node **v** from **u**. The path from **u** to **v** is the longest simple path in the graph. Parent-pointer backtracking from **v** to **u** reconstructs the full ordered sequence of nodes and edges, and the union of all their pixel positions constitutes the final skeleton **S'**.
+
+This approach is computationally efficient (linear in the number of graph nodes and edges) and identifies the longest continuous crack trajectory without any free parameters.
+
+### 3.6 Width Preservation
+
+The width-map variant of the algorithm accepts a skeleton image in which each pixel's value encodes the local crack half-width (in pixels) as computed by the distance-transform-based `CrackAnalyse` module, rather than a simple binary value. The refinement logic operates on the binary support (non-zero pixels) of this image, producing a binary mask of surviving pixels. The final output is obtained by zeroing all positions in the original width-map image that are not present in the binary mask. This preserves the original width values at surviving pixels without any interpolation or resampling, ensuring that downstream measurements — maximum width, minimum width, mean width — are computed from unmodified detector outputs.
+
+---
+
+## 4. Implementation Notes
+
+The pipeline is implemented in Python using NumPy for array operations and OpenCV for degree-map convolution and image rendering. The graph data structure (`SkeletonGraph`) is a pure-Python adjacency-list representation that stores edge pixel lists explicitly, making it straightforward to render the graph back to an image at any stage of the pipeline. No external graph library is required.
+
+The two public entry points are:
+
+- `refine_skeleton(skeleton_img, ...)` — accepts a binary or valued skeleton and returns a cleaned uint8 binary image.
+- `refine_skeleton_preserve_widths(skeleton_width_img, ...)` — accepts a width-valued skeleton (such as `CrackAnalyse.img_skl`) and returns a cleaned image in the original dtype with original width values preserved at surviving pixels.
+
+Both functions accept three keyword arguments: `min_branch_ratio` (proportional pruning threshold, default 0.15), `min_branch_length` (absolute pruning threshold in pixels, default 10), and `keep_only_longest_path` (boolean, default True).
+
+---
+
+## 5. Results and Effect on Width Measurement
+
+The practical effect of the refinement pipeline is best understood by considering what changes between the raw and refined skeletons at each stage:
+
+**After connected-component filtering:** All isolated fragments shorter than the dominant crack are removed from the skeleton. Width measurements from noise patches in the segmentation mask are eliminated entirely.
+
+**After branch pruning:** Short branches emanating from junction nodes are removed. The skeleton transitions from a branching tree structure towards a simple path. Junction nodes whose branches have all been pruned become regular path-pixel nodes, reducing the graph degree and simplifying the topology. The width map computed from the pruned skeleton no longer contains measurements from branch-tip regions, which tend to be artificially narrow because the crack boundary converges to a point near the tip.
+
+**After longest-path extraction:** The skeleton is reduced to a single continuous curve from one crack terminus to the other. Maximum and minimum width locations are uniquely defined as single points along this curve, and the concepts of "max circle" and "min circle" used in the visual overlay (yellow and magenta respectively) are unambiguous.
+
+---
+
+## 6. Conclusion
+
+The skeleton refinement module solves a well-defined and practically important problem: raw skeletons from crack segmentation are topologically complex and noisy, making direct width measurement unreliable. By converting the skeleton to a graph, filtering to the largest component, pruning short branches adaptively, and extracting the longest path, the module produces a clean, single-path skeleton that faithfully represents the primary crack trajectory. The pipeline is parameter-light, fully automatic, and computationally efficient, making it suitable for batch processing of large concrete image datasets in structural health monitoring workflows.
+
+---
+
+*Keywords: crack width measurement, skeleton pruning, graph-based image analysis, concrete structural inspection, medial axis refinement*

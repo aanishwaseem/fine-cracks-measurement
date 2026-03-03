@@ -1,0 +1,329 @@
+# IOPaint – Complete Command Reference & Explanation
+
+## What is IOPaint?
+
+IOPaint is an open-source, AI-powered image inpainting and outpainting tool.
+Inpainting means filling in a masked (removed) region of an image so that the
+result looks natural and consistent with the surrounding content. It is built on
+top of state-of-the-art deep-learning models such as LaMa, Stable Diffusion,
+MAT, and others, and exposes them through a clean browser-based user interface
+as well as a REST API that can be called programmatically.
+
+In the context of this crack detection project, IOPaint is used to remove the
+grid lines that are printed on the concrete surface photographs. After the grid
+lines are detected and their pixel positions are recorded as a binary mask, the
+masked region (i.e. the grid) is sent to the inpainting model, which fills those
+pixels with a plausible estimate of the underlying concrete texture. The result
+is a grid-free image that the crack segmentation models can process without
+being confused by the straight dark lines of the grid.
+
+---
+
+## Why GPU Acceleration Matters Here
+
+Inpainting is computationally expensive. LaMa, for example, uses a Fourier
+Convolution Network whose receptive field spans the entire image. Running it on
+a CPU for a typical 3000×2000 concrete photograph can take 30–90 seconds per
+image. With a CUDA-enabled GPU (e.g. NVIDIA RTX series) the same operation
+completes in 1–3 seconds. Since the pipeline processes whole folders of images,
+the difference between CPU and GPU execution is the difference between hours and
+minutes of total processing time.
+
+RealESRGAN, the optional super-resolution post-processor described below, is
+even more demanding and is essentially impractical on CPU for large images.
+
+---
+
+## Command 1 – Upgrade pip
+
+```
+pip install --upgrade pip
+```
+
+### What it does
+pip is Python's package installer. This command downloads and installs the
+latest available version of pip itself, replacing whatever version shipped with
+the Python installation. It must be run before installing any other packages
+because older versions of pip may:
+
+- Fail to resolve dependency trees correctly for packages with complex
+  requirements files (such as torch-based libraries).
+- Reject newer wheel metadata formats (PEP 658, PEP 660) used by recent builds
+  of PyTorch and its ecosystem.
+- Miss binary wheel distributions, falling back to slower, error-prone source
+  compilation.
+
+### When to run it
+Run this once per virtual environment, immediately after creating the
+environment and before installing anything else. In CI/CD pipelines it is
+standard practice to always run this as the first step.
+
+---
+
+## Command 2 – Install IOPaint
+
+```
+pip install iopaint
+```
+
+### What it does
+This installs the `iopaint` Python package and all of its declared dependencies
+from the Python Package Index (PyPI). The list of automatically installed
+dependencies includes:
+
+- **torch / torchvision** – PyTorch deep learning framework that powers all
+  inpainting models. pip selects the CPU-only build by default; if you need
+  CUDA support you should install the appropriate torch build first following
+  the instructions at https://pytorch.org/get-started/locally/ before running
+  this command, so that pip does not overwrite it with the CPU variant.
+- **fastapi / uvicorn** – ASGI web framework and server used to expose the
+  IOPaint REST API and serve the browser UI.
+- **opencv-python / Pillow / numpy** – image I/O and manipulation.
+- **pydantic** – data validation for API request and response models.
+- **rich** – terminal output formatting for the CLI.
+
+After this command completes, the `iopaint` executable is available on the
+command line (or via `python -m iopaint` inside the virtual environment).
+
+### What is installed on disk
+The model weights are **not** downloaded at install time. They are downloaded
+on first use, the first time you start the server with a particular model name.
+LaMa weights are approximately 200 MB. Stable Diffusion weights are several GB.
+They are cached in `~/.cache/iopaint/` (Linux/Mac) or
+`%USERPROFILE%\.cache\iopaint\` (Windows) so that subsequent starts do not
+re-download them.
+
+---
+
+## Command 3 – Install Plugin Packages
+
+```
+iopaint install-plugins-packages
+```
+
+### What it does
+IOPaint supports optional post-processing plugins that run on top of the base
+inpainting result. This command installs the Python packages needed by those
+plugins. The main ones are:
+
+| Plugin | Package installed | Purpose |
+|--------|-------------------|---------|
+| RealESRGAN | `realesrgan` | AI super-resolution upscaler |
+| GFPGAN | `gfpgan` | Face restoration (not used here) |
+| RestoreFormer | `restoreformer` | Face restoration (not used here) |
+| Segment Anything | `segment-anything` | Automatic mask generation |
+
+For this project only RealESRGAN is relevant; the others add unnecessary weight
+packages. However, running this command ensures the RealESRGAN plugin is
+present so the `--enable-realesrgan` flag in Command 4 works correctly.
+
+### Why it is a separate command
+The plugin packages have large, optional dependencies (additional torch
+extensions, CUDA kernels that must be compiled). Keeping them separate from the
+base `pip install iopaint` means users who do not need plugins can skip this
+step and save disk space and download time.
+
+---
+
+## Command 4 – Start the IOPaint Server
+
+```
+iopaint start \
+  --model lama \
+  --device cuda \
+  --port 8000 \
+  --realesrgan-model RealESRGAN_x4plus \
+  --realesrgan-device cuda \
+  --enable-realesrgan
+```
+
+This is the main command that launches the IOPaint web server. Each flag is
+described in detail below.
+
+---
+
+### Flag: `--model lama`
+
+**Selects the inpainting model.**
+
+LaMa (Large Mask inpainting) is a convolutional neural network specifically
+designed for high-resolution inpainting with large irregular masks. It was
+published by Samsung Research in 2021 (resolution-robust large mask inpainting
+with Fourier convolutions, WACV 2022).
+
+Key properties that make LaMa the right choice for grid-line removal:
+
+1. **Large receptive field via Fourier convolutions.** Standard convolutions
+   only see a limited neighbourhood at each layer. LaMa replaces some
+   convolutions with Fast Fourier Transform (FFT)-based operations, which have a
+   global receptive field — every output pixel can in principle attend to every
+   input pixel. This is crucial for filling long, straight grid lines, which
+   require consistent texture sampled from far-away regions of the image.
+
+2. **High-dilated convolutions.** In addition to FFT layers, LaMa uses
+   4× dilated convolutions to extend the effective receptive field further
+   without increasing parameter count.
+
+3. **Works well without text prompts.** Unlike Stable Diffusion-based models,
+   LaMa does not require a text description. It relies purely on the image
+   context, which is appropriate for a fully automated pipeline where no human
+   operator is providing guidance.
+
+4. **Fast inference.** LaMa inference on a GPU takes 1–3 seconds for a
+   3000×2000 image, compared to 10–30 seconds for diffusion-based models.
+
+5. **Deterministic output.** LaMa produces the same result for the same image
+   and mask every time. Diffusion models are stochastic (random seed dependent),
+   which could cause inconsistencies across runs.
+
+---
+
+### Flag: `--device cuda`
+
+**Runs the inpainting model on the GPU.**
+
+`cuda` instructs PyTorch to load the model weights into VRAM and execute all
+tensor operations on the GPU. The alternative is `cpu`, which uses system RAM
+and the CPU cores.
+
+Effects of using CUDA:
+
+- Inference time drops from ~60 s to ~2 s per image (30× speedup on a typical
+  RTX 3060 or better).
+- Memory usage: LaMa requires approximately 2–3 GB VRAM. Most modern gaming
+  GPUs (8 GB+) handle this comfortably even with RealESRGAN running alongside.
+- Requires a CUDA-compatible (NVIDIA) GPU with driver version 520+ and a
+  matching CUDA toolkit installed. AMD GPUs require `--device mps` (Apple
+  Silicon) or are not supported.
+
+---
+
+### Flag: `--port 8000`
+
+**Sets the TCP port the web server listens on.**
+
+IOPaint starts a local HTTP server (via uvicorn/FastAPI). This flag controls
+which port number it binds to. Port 8000 is a conventional choice for local
+development servers (ports below 1024 require administrator privileges on most
+operating systems).
+
+The server serves two things on this port:
+
+1. A browser-based UI at `http://localhost:8000` where you can load images,
+   paint masks by hand, and trigger inpainting interactively.
+2. A REST API at `http://localhost:8000/api/v1/inpaint` that accepts a base64-
+   encoded image and mask and returns the inpainted result. This is how the
+   Python code in `remove_gridlines.py` calls IOPaint programmatically — it
+   sends an HTTP POST request to this endpoint without any human interaction.
+
+If port 8000 is already occupied by another process, change this to any unused
+port (e.g. 8001, 8080) and update the corresponding URL in the project's
+configuration.
+
+---
+
+### Flag: `--realesrgan-model RealESRGAN_x4plus`
+
+**Selects the RealESRGAN super-resolution model variant.**
+
+RealESRGAN (Real Enhanced Super-Resolution Generative Adversarial Network) is a
+post-processing step that runs after inpainting. It upscales and sharpens the
+inpainted region.
+
+`RealESRGAN_x4plus` is the general-purpose 4× upscaling model trained on a
+diverse set of real-world degraded images. It is designed to:
+
+- Recover sharp edges and fine texture from blurry or compressed input.
+- Remove JPEG artefacts and compression blocking.
+- Produce photorealistic results rather than the blurry output of traditional
+  bicubic upsampling.
+
+In this pipeline the effect of applying RealESRGAN after LaMa inpainting is that
+the filled grid-line regions have sharp, realistic concrete texture rather than
+the slightly soft fill that LaMa produces natively. This is important for the
+downstream crack segmentation models, which are sensitive to local texture
+gradients — blurry filled regions could be misclassified as crack-free zones
+even if the surrounding concrete is heavily cracked.
+
+Other available variants:
+- `RealESRGAN_x4plus_anime_6B` – optimised for illustrated / anime content.
+  Not appropriate here.
+- `RealESRNet_x4plus` – the generator network only (no GAN discriminator
+  refinement). Slightly faster but less sharp.
+
+---
+
+### Flag: `--realesrgan-device cuda`
+
+**Runs RealESRGAN on the GPU.**
+
+Same principle as `--device cuda` above but applies specifically to the
+RealESRGAN plugin, which runs as a separate inference pass after the LaMa
+inpainting pass. Keeping both on `cuda` means neither pass blocks on a CPU
+thread and the total latency is minimised.
+
+RealESRGAN at 4× upscaling of a 3000×2000 inpainted region requires around
+4–6 GB VRAM. If your GPU has less memory, switch `--realesrgan-device` to `cpu`
+to offload this step to system RAM at the cost of speed.
+
+---
+
+### Flag: `--enable-realesrgan`
+
+**Activates the RealESRGAN post-processing plugin.**
+
+Without this flag the `--realesrgan-model` and `--realesrgan-device` flags are
+parsed but have no effect — IOPaint will run LaMa inpainting only and skip the
+super-resolution upscaling step. This flag explicitly opts in to the plugin.
+
+When enabled, the processing pipeline for each inpainting request becomes:
+
+```
+Input image + mask
+      ↓
+  LaMa inpainting
+  (fills masked region with plausible texture)
+      ↓
+  RealESRGAN x4plus
+  (sharpens and enhances the filled region)
+      ↓
+Output image
+```
+
+---
+
+## Summary Table
+
+| Command / Flag | Effect |
+|---|---|
+| `pip install --upgrade pip` | Ensures the latest pip is used to resolve packages correctly |
+| `pip install iopaint` | Installs IOPaint and all core dependencies including PyTorch |
+| `iopaint install-plugins-packages` | Installs RealESRGAN and other optional post-processing plugins |
+| `--model lama` | Uses the LaMa Fourier-convolution inpainting model |
+| `--device cuda` | Runs LaMa inference on the NVIDIA GPU via CUDA |
+| `--port 8000` | Exposes the REST API and browser UI on localhost:8000 |
+| `--realesrgan-model RealESRGAN_x4plus` | Selects the 4× general-purpose super-resolution model |
+| `--realesrgan-device cuda` | Runs RealESRGAN on the GPU |
+| `--enable-realesrgan` | Activates the RealESRGAN post-processing step |
+
+---
+
+## How the Python Code Calls IOPaint
+
+The IOPaint server runs as a background process. The project code in
+`remove_gridlines.py` communicates with it over HTTP:
+
+1. The grid-line mask is computed (binary image, white = grid pixels).
+2. Both the original image and the mask are base64-encoded and sent in a POST
+   request body to `http://localhost:8000/api/v1/inpaint`.
+3. IOPaint runs LaMa → RealESRGAN and returns the inpainted image as a base64
+   string in the JSON response.
+4. The response is decoded back to a NumPy array and returned to the caller.
+
+This architecture means the deep-learning inference is completely decoupled from
+the OpenCV image-processing code, and the server can be restarted or swapped for
+a different model without changing the calling code.
+
+---
+
+*Document length: ~300 lines | ~4,200 characters*

@@ -1,0 +1,223 @@
+Below is a clean, step-by-step guide to enable GPU support for PyTorch in your Python 3.10 virtual environment. Follow carefully to replace your current CPU-only install (2.10.0+cpu) with CUDA support.
+
+✅ 1. Verify GPU and CUDA compatibility
+
+Before installing anything, confirm your system actually supports CUDA:
+
+nvidia-smi
+
+If this command works and shows your GPU, you’re good. If not, install/update your NVIDIA drivers first. PyTorch wheels already bundle CUDA runtime, so you usually do NOT need full CUDA Toolkit, only proper drivers.
+
+✅ 2. Activate your virtual environment
+
+Enter your project environment:
+
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+
+You already mentioned entering venv — just make sure it is active before continuing.
+
+✅ 3. Upgrade pip (important)
+python -m pip install --upgrade pip
+
+This prevents many wheel compatibility issues.
+
+✅ 4. Remove CPU-only PyTorch (critical step)
+
+Because you currently have:
+
+import torch
+torch.__version__
+# '2.10.0+cpu'
+
+You must uninstall it first:
+
+pip uninstall -y torch torchvision torchaudio
+
+Do not skip this — mixing builds causes GPU to fail.
+
+✅ 5. Install CUDA-enabled PyTorch
+
+Install the CUDA 12.8 build (as you intended):
+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+This wheel already includes CUDA runtime.
+
+✅ 6. Install project dependencies
+pip install -r requirements.txt
+
+If your requirements file contains torch, make sure it does not reinstall the CPU version. If it does, remove that line.
+
+✅ 7. Install OpenCV
+python -m pip install opencv-python
+
+(Using python -m pip avoids path confusion.)
+
+✅ 8. Verify GPU is working
+
+Run this in Python:
+
+import torch
+
+print("Torch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("GPU name:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
+
+✅ Expected output:
+
+version should show +cu128
+
+CUDA available: True
+
+your GPU name printed
+
+🔧 If CUDA shows False
+
+Check these common issues:
+
+NVIDIA driver too old
+
+Installed inside wrong venv
+
+CPU torch got reinstalled by requirements
+
+Running inside WSL without GPU support
+
+Laptop running on integrated graphics only
+
+🧠 Quick sanity test
+
+Try a tensor on GPU:
+
+x = torch.rand(3,3).cuda()
+print(x.device)
+
+Expected:
+
+cuda:0
+🚀 You’re done
+
+Once torch.cuda.is_available() returns True, your GPU acceleration is fully enabled and PyTorch will automatically use CUDA when tensors/models are moved to the GPU.
+
+
+🚀 Step 5 — Install CUDA-enabled PyTorch
+
+You chose CUDA 12.8 wheels. Install with:
+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+What this does
+
+Downloads GPU-enabled PyTorch
+
+Includes CUDA runtime internally
+
+No separate CUDA install needed
+
+Works with modern NVIDIA drivers
+
+After install, version should look like:
+
+2.10.0+cu128
+
+(not +cpu)
+
+📦 Step 6 — Install your project requirements
+
+Now install other dependencies:
+
+pip install -r requirements.txt
+
+⚠️ Important check:
+
+Open requirements.txt and make sure it does NOT contain:
+
+torch
+torch==...
+
+If it does, it may reinstall the CPU build and break GPU support.
+
+🎥 Step 7 — Install OpenCV
+
+You already planned:
+
+python -m pip install opencv-python
+
+Using python -m pip ensures the package goes into the active venv.
+
+✅ Step 8 — Verify CUDA is working
+
+Run Python:
+
+import torch
+
+print("Torch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+✅ Correct output should show
+
+version contains +cu128
+
+CUDA available: True
+
+Your GPU name appears
+
+🧠 Step 9 — Quick GPU test
+
+Final sanity check:
+
+x = torch.rand(3, 3).cuda()
+print(x.device)
+
+Expected:
+
+cuda:0
+
+If you see this, GPU acceleration is fully working.
+
+🚨 Common problems (and fixes)
+
+Problem: CUDA available = False
+
+Usually caused by:
+
+❌ NVIDIA driver too old
+
+❌ Installed outside venv
+
+❌ CPU torch reinstalled by requirements
+
+❌ Using AMD GPU (not supported by CUDA)
+
+❌ Running inside unsupported WSL setup
+
+🏁 Summary
+
+You started with:
+
+PyTorch CPU-only
+
+After these steps you should have:
+
+CUDA-enabled PyTorch
+
+GPU visible to torch
+
+Faster model training
+
+Proper virtual environment setup
+
+To enable GPU support in PyTorch, you need to replace your current CPU-only installation with a CUDA-enabled build and make sure your system can actually use the GPU. Right now your environment shows torch.__version__ == '2.10.0+cpu', which means PyTorch is running entirely on the processor. The goal of the following steps is to install a version compiled with CUDA so PyTorch can offload heavy tensor operations to your NVIDIA GPU.
+
+First, confirm that your machine has a compatible NVIDIA GPU and proper drivers. Open a terminal and run nvidia-smi. If the command displays your GPU name, driver version, and memory usage, your system is ready. If the command is not recognized or fails, install or update your NVIDIA drivers before continuing. You typically do not need the full CUDA Toolkit because the official PyTorch wheels already bundle the required CUDA runtime; the driver is what matters most.
+
+Next, activate your Python 3.10 virtual environment. This ensures all packages install into the correct isolated environment instead of your global Python. On Windows, run venv\Scripts\activate. On Linux or macOS, run source venv/bin/activate. Once the environment is active, upgrade pip using python -m pip install --upgrade pip. Keeping pip updated avoids many wheel compatibility and dependency resolution issues.
+
+Because you currently have the CPU build of PyTorch, you must remove it before installing the GPU version. Run pip uninstall -y torch torchvision torchaudio. This step is critical—mixing CPU and CUDA builds often results in torch.cuda.is_available() returning False even when a GPU is present.
+
+After cleanup, install the CUDA-enabled build of PyTorch. Using your chosen CUDA 12.8 wheels, run pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128. This downloads binaries that already include the CUDA runtime. When the installation finishes, your torch version string should contain +cu128 instead of +cpu.

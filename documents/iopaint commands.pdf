@@ -1,0 +1,5 @@
+pip install --upgrade pip
+pip install iopaint
+iopaint install-plugins-packages
+
+iopaint start --model lama --device cuda --port 8000 --realesrgan-model RealESRGAN_x4plus --realesrgan-device cuda --enable-realesrgan

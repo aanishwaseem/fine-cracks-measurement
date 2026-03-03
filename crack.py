@@ -18,6 +18,8 @@ from tkinter import messagebox, simpledialog
 from tkinter import filedialog
 from crack_analysis import CrackAnalyse
 from crack_visualization import visualize_crack_overlay
+from skeleton_refine import refine_skeleton_preserve_widths
+
 from utils import (getBinaryImage, resize_image, extract_deepcracks,
                    overlay_binary_images, make_tiles_fixed_size,
                    run_inference, join_tiles_after_inference,
@@ -36,6 +38,7 @@ user_prefered_window_w = None
 
 _clean_image = None
 _clean_crack_image_on_bright = None
+_legend_clean_snapshot = None   # snapshot of image just before legend is drawn (for erasure)
 
 make_reference_image = False
 NUM_SCALING_IMAGES = 13  
@@ -361,7 +364,7 @@ def load_folder(folder_path):
     load_image()
 _image_loading = False
 def load_image():
-    global image, original_image, crack_image_on_bright, highlighted_cell, polygon_points, polygon_mode, _image_loading
+    global image, original_image, crack_image_on_bright, highlighted_cell, polygon_points, polygon_mode, _image_loading, _legend_clean_snapshot
 
     if _image_loading:
         return  # block re-entrant calls while a load is already in progress
@@ -379,6 +382,7 @@ def load_image():
     highlighted_cell = None
     polygon_points = []
     polygon_mode = False
+    _legend_clean_snapshot = None   # reset legend snapshot for the new image
     reset_main_image(img)
     _image_loading = False
 
@@ -661,7 +665,7 @@ def process_image(debug=False):
         #   DeepCrack → models/DeepCrack/codes/input_tiles
         # There is zero shared state, so both can run simultaneously.
 
-        _TILE_SIZE = 290
+        _TILE_SIZE = 200
 
         # Check whether grid removal result is already cached
         if cache_key in _grid_removal_cache:
@@ -732,14 +736,15 @@ def process_image(debug=False):
             except Exception as _e:
                 print(f"[✗] DeepCrack inpainting error: {_e}")
 
-        _t_inpaint = threading.Thread(target=_run_inpaint_bg, name="Inpaint-Thread", daemon=False)
-        _t_inpaint.start()
+        # _t_inpaint = threading.Thread(target=_run_inpaint_bg, name="Inpaint-Thread", daemon=False)
+        # _t_inpaint.start()
 
         # ── STEP 4: Join both threads ─────────────────────────────────────────
         print("[⏳] Waiting for UNet and inpainting to complete...")
         _t_unet.join()
-        _t_inpaint.join()
-
+        # _t_inpaint.join()
+        if _inpaint_data["result"] is None:
+            _inpaint_data["result"] = deepcrack_img_with_grids
         # ── STEP 5: Merge results ─────────────────────────────────────────────
         if _unet_data["status"] == "complete" and _inpaint_data["result"] is not None:
             merged = overlay_binary_images(_unet_data["result"], _inpaint_data["result"])
@@ -990,10 +995,28 @@ def on_mouse(event, x, y, flags, param):
                 # --- Debug: visualise what the crack analyser produced ---
                 dbg_input = selected_poly.copy()
                 dbg_binary = (analyser.img_bnr * 255).astype(np.uint8)
+
+                # --- Show RAW skeleton (before refinement) ---
                 dbg_skeleton_raw = analyser.img_skl.copy()
-                dbg_skeleton_raw = (dbg_skeleton_raw / (dbg_skeleton_raw.max() + 1e-9) * 255).astype(np.uint8)
-                dbg_skeleton_raw = cv2.applyColorMap(dbg_skeleton_raw, cv2.COLORMAP_JET)
-                dbg_skeleton_raw[analyser.img_skl == 0] = 0  # keep background black
+                dbg_skeleton_raw_vis = (dbg_skeleton_raw / (dbg_skeleton_raw.max() + 1e-9) * 255).astype(np.uint8)
+                dbg_skeleton_raw_vis = cv2.applyColorMap(dbg_skeleton_raw_vis, cv2.COLORMAP_JET)
+                dbg_skeleton_raw_vis[analyser.img_skl == 0] = 0
+                cv2.imshow("DBG: Skeleton RAW (before refinement)", dbg_skeleton_raw_vis)
+
+                # --- Refine skeleton: remove short branches, keep main crack path ---
+                analyser.img_skl = refine_skeleton_preserve_widths(
+                    analyser.img_skl,
+                    min_branch_ratio=0.15,
+                    min_branch_length=10,
+                    keep_only_longest_path=True,
+                )
+
+                # --- Show REFINED skeleton (after refinement) ---
+                dbg_skeleton_refined = analyser.img_skl.copy()
+                dbg_skeleton_refined_vis = (dbg_skeleton_refined / (dbg_skeleton_refined.max() + 1e-9) * 255).astype(np.uint8)
+                dbg_skeleton_refined_vis = cv2.applyColorMap(dbg_skeleton_refined_vis, cv2.COLORMAP_JET)
+                dbg_skeleton_refined_vis[analyser.img_skl == 0] = 0
+                cv2.imshow("DBG: Skeleton REFINED (after refinement)", dbg_skeleton_refined_vis)
 
                 dbg_interior = analyser.interior_mask.astype(np.uint8) * 255
 
@@ -1001,8 +1024,6 @@ def on_mouse(event, x, y, flags, param):
                 dbg_width_interior_vis = (dbg_width_interior / (dbg_width_interior.max() + 1e-9) * 255).astype(np.uint8)
                 dbg_width_interior_vis = cv2.applyColorMap(dbg_width_interior_vis, cv2.COLORMAP_JET)
                 dbg_width_interior_vis[dbg_width_interior == 0] = 0
-
-                # cv2.imshow("DBG: Skeleton (raw, color=width)", dbg_skeleton_raw)
            
                 # --- Mark max / min crack width positions on the image ---
                 width_map = analyser.get_width_map_interior()  # excludes boundary artifacts
@@ -1011,8 +1032,8 @@ def on_mouse(event, x, y, flags, param):
                     avg_scale = (scaling_factor_width + scaling_factor_height) / 2
 
                     # --- IQR-based outlier removal (Tukey fence) ---
-                    q25 = np.percentile(nonzero_vals, 25)
-                    q75 = np.percentile(nonzero_vals, 75)
+                    q25 = np.percentile(nonzero_vals, 10)
+                    q75 = np.percentile(nonzero_vals, 95)
                     iqr = q75 - q25
 
                     lower_fence = q25 - 1.5 * iqr
@@ -1058,7 +1079,7 @@ def on_mouse(event, x, y, flags, param):
 
                     # --- Pre-sort min candidates once (reused across retry iterations) ---
                     q2_5_val = np.percentile(filtered_vals, 50)
-                    search_mask = inlier_mask & (width_map >= q1_val) & (width_map <= q2_5_val)
+                    search_mask = inlier_mask & (width_map <= q2_5_val)
                     search_coords = np.argwhere(search_mask)
 
                     # If no pixels fall in [Q1, Q2.5] range, fall back to all inliers
@@ -1072,17 +1093,20 @@ def on_mouse(event, x, y, flags, param):
                     search_widths_sorted = search_widths_all[sort_order]
 
                     # --- Iterative exclusion with progressive tightening ---
-                    # Start at P60.  If no min candidate qualifies, raise the
-                    # threshold by 5-percentile steps toward max, shrinking the
-                    # exclusion zone each time.  After P100, do a final pass
-                    # with NO exclusion zone (only max circle + polygon edge).
+                    # Collect valid candidates from EVERY exclusion level.
+                    # A candidate is valid for a given level when its circle
+                    # does NOT overlap any pixel whose width >= excl_threshold.
+                    # After all levels are tested, pick the globally narrowest
+                    # valid candidate (lowest width value).
                     min_pt = None
                     min_val = None
-                    exclusion_percentiles = list(range(50, 101, 5))  # 60, 65, … 100
+                    exclusion_percentiles = list(range(30, 101, 5))
+
+                    # Accumulate (candidate_pt, val, excl_pct) across all levels
+                    all_level_candidates = []
 
                     for excl_pct in exclusion_percentiles:
                         if excl_pct >= 100:
-                            # 100th percentile = only the single max pixel excluded
                             excl_threshold = max_val + 1e-9
                         else:
                             excl_threshold = np.percentile(filtered_vals, excl_pct)
@@ -1100,7 +1124,7 @@ def on_mouse(event, x, y, flags, param):
                                     return True
                             return False
 
-                        # Walk sorted candidates (narrowest first)
+                        # Collect every candidate that passes all rules at this level
                         for coord, val in zip(search_coords_sorted, search_widths_sorted):
                             candidate_pt = (x + coord[1], y + coord[0])
 
@@ -1116,20 +1140,37 @@ def on_mouse(event, x, y, flags, param):
                             if _overlaps_excl(candidate_pt, CIRCLE_RADIUS):
                                 continue
 
-                            min_pt = candidate_pt
-                            min_val = val
-                            break
+                            all_level_candidates.append((candidate_pt, val, excl_pct))
 
-                        if min_pt is not None:
-                            print(f"[INFO] Min point found at exclusion P{excl_pct}")
-                            break
-                        else:
-                            print(f"[INFO] No min candidate at P{excl_pct}, raising exclusion threshold...")
+                    # Pick the globally narrowest valid candidate across all levels
+                    if all_level_candidates:
+                        best_pt, best_val, best_pct = min(all_level_candidates, key=lambda c: c[1])
+                        min_pt = best_pt
+                        min_val = best_val
 
-                    # --- Final fallback: widen search to global max, no exclusion zone ---
+                        # --- Tune min_val to nearest scaling-factor multiple ---
+                        # Convert raw pixel width to mm, round to nearest sf multiple,
+                        # then convert back to pixels so downstream mm calcs stay consistent.
+                        _sf = avg_scale                          # mm per pixel (average)
+                        _min_val_mm_raw = min_val * _sf * 2     # diameter in mm (raw)
+                        _multiple = _sf                          # snap grid = 1 px worth in mm
+                        _rounded_mm = math.floor(_min_val_mm_raw / _multiple) * _multiple                        # Never snap to zero
+                        if _rounded_mm < _multiple:
+                            _rounded_mm = _multiple
+                        _min_val_tuned = _rounded_mm / (2 * _sf)  # back to half-width in px
+                        print(f"[INFO] Global min candidate: raw={min_val:.4f} px "
+                              f"({_min_val_mm_raw:.3f} mm) → snapped={_min_val_tuned:.4f} px "
+                              f"({_rounded_mm:.3f} mm)  [grid={_multiple:.3f} mm/px]  "
+                              f"from P{best_pct}  "
+                              f"(total candidates across all levels: {len(all_level_candidates)})")
+                        min_val = _min_val_tuned
+                    else:
+                        print(f"[INFO] No candidates found across all exclusion levels.")
+
+                    # --- Final fallback: widen search to global width range, no exclusion zone ---
                     # Only max circle + polygon edge rejection remain.
                     if min_pt is None:
-                        print("[INFO] P100 exhausted — widening min search to global width range (no exclusion zone)...")
+                        print("[INFO] No candidates from exclusion levels — widening to global width range (no exclusion zone)...")
                         # Include ALL nonzero skeleton pixels as candidates
                         global_search_mask = width_map > 0
                         global_search_coords = np.argwhere(global_search_mask)
@@ -1139,6 +1180,7 @@ def on_mouse(event, x, y, flags, param):
                             global_coords_sorted = global_search_coords[g_order]
                             global_widths_sorted = global_widths[g_order]
 
+                            global_valid_candidates = []
                             for coord, val in zip(global_coords_sorted, global_widths_sorted):
                                 candidate_pt = (x + coord[1], y + coord[0])
 
@@ -1147,13 +1189,15 @@ def on_mouse(event, x, y, flags, param):
                                 if circles_overlap(max_pt, candidate_pt, CIRCLE_RADIUS):
                                     continue
 
-                                min_pt = candidate_pt
-                                min_val = val
-                                print(f"[INFO] Min point found in global fallback")
-                                break
+                                global_valid_candidates.append((candidate_pt, val))
 
-                        if min_pt is None:
-                            print("[WARN] Polygon too small to fit both circles.")
+                            # Pick the true minimum among all valid global candidates
+                            if global_valid_candidates:
+                                best_pt, best_val = min(global_valid_candidates, key=lambda c: c[1])
+                                min_pt = best_pt
+                                min_val = best_val
+                                print(f"[INFO] Min point found in global fallback "
+                                      f"(best of {len(global_valid_candidates)} valid candidates, width={min_val:.4f})")
                     # --- Draw skeleton heatmap on crack_image_on_bright ---
                     if crack_image_on_bright is not None:
                         # Build a JET colormap overlay of the skeleton width map
@@ -1191,68 +1235,77 @@ def on_mouse(event, x, y, flags, param):
                     print(f"Max width: {max_val_mm*2:.2f} mm at {max_pt}")
 
                     # --- Draw min circle if found ---
-                    min_width_low = 0.0
-                    min_width_high = 0.0
                     if min_pt is not None:
                         min_val_mm = min_val * avg_scale
-
                         cv2.circle(image, min_pt, CIRCLE_RADIUS, COLOR_MIN, 1)
-
-                        min_width_low = q1_val * 2
-                        min_width_high = q2_val * 2
-                        if min_width_high > max_width:
-                            p10_val = np.percentile(filtered_vals, 10)
-                            p5_val = np.percentile(filtered_vals, 5)
-                            min_width_low = p5_val
-                            min_width_high = p10_val
-
-                        print(f"Min width range: {min_width_low:.2f} mm → {min_width_high:.2f} mm")
+                        print(f"Min width: {min_val_mm*2:.2f} mm at {min_pt}")
                     else:
+                        min_val_mm = None
                         print(f"[WARN] No min point — polygon too small for two circles.")
 
-                    # --- Top-right legend ---
+                    # --- Top-right legend (erase previous, then redraw) ---
+                    global _legend_clean_snapshot
                     _img_h, _img_w = image.shape[:2]
-                    _font        = cv2.FONT_HERSHEY_SIMPLEX
-                    _font_scale  = 1.4
-                    _thickness   = 2
-                    _line_len    = 40   # length of the colored dash
-                    _pad         = 16   # padding from top / right edge
-                    _row_gap     = 48   # vertical spacing between legend rows
+                    _font       = cv2.FONT_HERSHEY_SIMPLEX
+                    _font_scale = 1.2
+                    _thickness  = 2
+                    _pad        = 16    # px from top / right edges
+                    _row_gap    = 46    # vertical gap between rows
+                    _swatch_r   = 8     # radius of the colored circle swatch
 
-                    # Erase previous legend by restoring clean pixels in the top-right zone.
-                    # Zone height: enough for 2 rows (2 * _row_gap) + padding.
-                    # Zone width: generous fixed budget (600 px).
-                    _legend_zone_h = _pad + 2 * _row_gap + 20
-                    _legend_zone_w = min(600, _img_w)
-                    if _clean_image is not None:
-                        image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w] = \
-                            _clean_image[0:_legend_zone_h, _img_w - _legend_zone_w:_img_w]
-
+                    # Build rows: (color, label text)
                     _legend_rows = [
-                        (COLOR_MAX, f"- {max_val_mm*2:.1f} mm (max)"),
+                        (COLOR_MAX, f"Max: {max_val_mm*2:.2f} mm"),
                     ]
-                    if min_pt is not None:
+                    if min_val_mm is not None:
                         _legend_rows.append(
-                            (COLOR_MIN, f"- {min_width_low:.1f}-{min_width_high:.1f} mm (min)")
+                            (COLOR_MIN, f"Min: {min_val_mm*2:.2f} mm")
                         )
 
-                    # Pre-compute widths to right-align
-                    _row_widths = []
+                    # Measure the widest row to compute the erase zone
+                    _max_tw = 0
+                    _row_sizes = []
                     for _clr, _txt in _legend_rows:
-                        (_tw, _th), _ = cv2.getTextSize(_txt, _font, _font_scale, _thickness)
-                        _row_widths.append(_tw)
+                        (_tw, _th), _base = cv2.getTextSize(_txt, _font, _font_scale, _thickness)
+                        _row_sizes.append((_tw, _th, _base))
+                        if _tw > _max_tw:
+                            _max_tw = _tw
 
-                    for _i, ((_clr, _txt), _tw) in enumerate(zip(_legend_rows, _row_widths)):
-                        _ty = _pad + _th + _i * _row_gap
+                    _zone_w = _max_tw + _swatch_r * 2 + _pad * 3   # swatch + gap + text + margin
+                    _zone_h = _pad + len(_legend_rows) * _row_gap + _pad
+
+                    # Erase the zone using the stored clean snapshot
+                    _x0_zone = max(0, _img_w - _zone_w)
+                    _y0_zone = 0
+                    _x1_zone = _img_w
+                    _y1_zone = min(_img_h, _zone_h)
+
+                    if _legend_clean_snapshot is not None:
+                        image[_y0_zone:_y1_zone, _x0_zone:_x1_zone] = \
+                            _legend_clean_snapshot[_y0_zone:_y1_zone, _x0_zone:_x1_zone]
+                    else:
+                        # First call: darken the zone slightly as a neutral background
+                        image[_y0_zone:_y1_zone, _x0_zone:_x1_zone] = \
+                            (image[_y0_zone:_y1_zone, _x0_zone:_x1_zone].astype(np.float32) * 0.45).astype(np.uint8)
+
+                    # Save clean snapshot AFTER erasing so next call can restore cleanly
+                    _legend_clean_snapshot = image.copy()
+
+                    # Draw each row: colored circle swatch + text
+                    for _i, ((_clr, _txt), (_tw, _th, _base)) in enumerate(zip(_legend_rows, _row_sizes)):
+                        _row_y_center = _pad + _swatch_r + _i * _row_gap
+                        # Right-align: text right edge at _img_w - _pad
                         _tx = _img_w - _tw - _pad
-                        # Draw thick colored dash then label
-                        cv2.line(image,
-                                 (_tx - 5, _ty - _th // 2),
-                                 (_tx - 5 + _line_len, _ty - _th // 2),
-                                 _clr, 2)
-                        cv2.putText(image, _txt,
-                                    (_tx + _line_len - 15, _ty),
+                        _ty = _row_y_center + _th // 2
+                        # Swatch circle just to the left of the text
+                        _sx = _tx - _swatch_r * 2 - 6
+                        _sy = _row_y_center
+
+                        cv2.circle(image, (_sx, _sy), _swatch_r, _clr, -1)           # filled swatch
+                        cv2.circle(image, (_sx, _sy), _swatch_r, (255, 255, 255), 1) # white outline
+                        cv2.putText(image, _txt, (_tx, _ty),
                                     _font, _font_scale, _clr, _thickness, cv2.LINE_AA)
+
 
                 cv2.imshow(window_title, image)
                 
@@ -1421,11 +1474,17 @@ def main_loop():
             current_image_index += 1
             if current_image_index < len(image_files):
                 load_image()
+                # flush any keypresses buffered while loading was in progress
+                while (cv2.waitKey(1) & 0xFF) != 0xFF:
+                    pass
             else:
                 print("End of images in folder.")
         elif key == ord('b') and not _image_loading:
             current_image_index = max(0, current_image_index - 1)
             load_image()
+            # flush any keypresses buffered while loading was in progress
+            while (cv2.waitKey(1) & 0xFF) != 0xFF:
+                pass
         elif key == ord('m'):
             is_zoomed = not is_zoomed
         elif key == ord('d'):
@@ -1465,6 +1524,8 @@ def main_loop():
                         _cracks_binary = intersect_masks(reference_image, _cracks_binary)
                         binary_mask = _cracks_binary
                         crack_image_on_bright = draw_contours_on_img(image, _cracks_binary)
+                        if crack_image_on_bright is not None:
+                            _clean_crack_image_on_bright = crack_image_on_bright.copy()
                 else:
                     print("[INFO] Reference editor cancelled.")
             else:

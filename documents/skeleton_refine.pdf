@@ -1,0 +1,507 @@
+"""
+Skeleton Refinement via Graph-Based Pruning
+============================================
+Skeleton -> Graph -> Connected Components -> Longest Path -> Branch Pruning -> Clean Skeleton
+
+Pipeline:
+1. Extract skeleton pixels and classify by degree (endpoint / path / junction)
+2. Build a graph of skeleton segments between junctions/endpoints
+3. Keep only the largest connected component (by total pixel count)
+4. Iteratively prune short branches (leaves) until a single clean path remains
+5. Return the cleaned skeleton as a binary image
+"""
+
+import numpy as np
+import cv2
+from collections import deque
+
+
+# ---------------------------------------------------------------------------
+# 1.  Pixel-level helpers
+# ---------------------------------------------------------------------------
+
+# 8-connected neighbour offsets (row, col)
+_NBRS_8 = [(-1, -1), (-1, 0), (-1, 1),
+            ( 0, -1),          ( 0, 1),
+            ( 1, -1), ( 1, 0), ( 1, 1)]
+
+
+def _degree_map(skeleton_bin):
+    """Return an array where each skeleton pixel holds its 8-conn degree."""
+    skel = (skeleton_bin > 0).astype(np.uint8)
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]], dtype=np.uint8)
+    neighbours = cv2.filter2D(skel, cv2.CV_16U, kernel)
+    deg = (neighbours * skel).astype(np.int32)
+    return deg
+
+
+def _classify_pixels(degree_map, skeleton_bin):
+    """
+    Classify every skeleton pixel.
+
+    Returns
+    -------
+    endpoints  : set of (row, col) with degree == 1
+    junctions  : set of (row, col) with degree >= 3
+    path_pixels: set of (row, col) with degree == 2
+    """
+    skel_mask = skeleton_bin > 0
+    endpoints = set(zip(*np.where(skel_mask & (degree_map == 1))))
+    junctions = set(zip(*np.where(skel_mask & (degree_map >= 3))))
+    path_pixels = set(zip(*np.where(skel_mask & (degree_map == 2))))
+    return endpoints, junctions, path_pixels
+
+
+# ---------------------------------------------------------------------------
+# 2.  Graph construction
+# ---------------------------------------------------------------------------
+
+class SkeletonGraph:
+    """
+    Lightweight graph built from a binary skeleton image.
+
+    *Nodes* are junctions (degree >= 3) and endpoints (degree == 1).
+    *Edges* are the chains of path pixels connecting two nodes.
+    Each edge stores the list of (row, col) pixels along the chain
+    and its length (pixel count).
+    """
+
+    def __init__(self):
+        self.node_pos = {}          # node_id -> (row, col)
+        self.adj = {}               # node_id -> set of (neighbour_id, edge_key)
+        self.edges = {}             # edge_key -> { 'pixels': [...], 'length': int, 'nodes': (a,b) }
+        self._next_node = 0
+        self._next_edge = 0
+        self._pos_to_node = {}      # (row,col) -> node_id
+
+    def add_node(self, r, c):
+        if (r, c) in self._pos_to_node:
+            return self._pos_to_node[(r, c)]
+        nid = self._next_node
+        self._next_node += 1
+        self.node_pos[nid] = (r, c)
+        self.adj[nid] = set()
+        self._pos_to_node[(r, c)] = nid
+        return nid
+
+    def add_edge(self, nid_a, nid_b, pixels):
+        eid = self._next_edge
+        self._next_edge += 1
+        self.edges[eid] = {
+            'pixels': pixels,
+            'length': len(pixels),
+            'nodes': (nid_a, nid_b),
+        }
+        self.adj[nid_a].add((nid_b, eid))
+        self.adj[nid_b].add((nid_a, eid))
+        return eid
+
+    def remove_edge(self, eid):
+        if eid not in self.edges:
+            return
+        nid_a, nid_b = self.edges[eid]['nodes']
+        self.adj[nid_a].discard((nid_b, eid))
+        self.adj[nid_b].discard((nid_a, eid))
+        del self.edges[eid]
+
+    def remove_node(self, nid):
+        if nid not in self.adj:
+            return
+        for _, eid in list(self.adj[nid]):
+            self.remove_edge(eid)
+        pos = self.node_pos.pop(nid, None)
+        if pos is not None:
+            self._pos_to_node.pop(pos, None)
+        del self.adj[nid]
+
+    def degree(self, nid):
+        return len(self.adj.get(nid, []))
+
+    def total_pixel_count(self):
+        """Total skeleton pixels represented by this graph (nodes + edge interiors)."""
+        count = len(self.node_pos)
+        for e in self.edges.values():
+            count += e['length']
+        return count
+
+    def all_pixels(self):
+        """Return set of all (row, col) pixels in this graph."""
+        pxs = set()
+        for pos in self.node_pos.values():
+            pxs.add(pos)
+        for e in self.edges.values():
+            pxs.update(e['pixels'])
+        return pxs
+
+    def connected_components(self):
+        """Return list of sets of node ids, one per connected component."""
+        visited = set()
+        components = []
+        for start in self.node_pos:
+            if start in visited:
+                continue
+            comp = set()
+            queue = deque([start])
+            while queue:
+                nid = queue.popleft()
+                if nid in comp:
+                    continue
+                comp.add(nid)
+                visited.add(nid)
+                for nbr, _ in self.adj.get(nid, []):
+                    if nbr not in comp:
+                        queue.append(nbr)
+            components.append(comp)
+        return components
+
+    def subgraph(self, node_ids):
+        """Return a new SkeletonGraph containing only the given node ids."""
+        sg = SkeletonGraph()
+        node_set = set(node_ids)
+        id_map = {}
+        for nid in node_set:
+            if nid in self.node_pos:
+                r, c = self.node_pos[nid]
+                new_id = sg.add_node(r, c)
+                id_map[nid] = new_id
+        added_edges = set()
+        for nid in node_set:
+            for nbr, eid in self.adj.get(nid, []):
+                if nbr in node_set and eid not in added_edges:
+                    sg.add_edge(id_map[nid], id_map[nbr],
+                                list(self.edges[eid]['pixels']))
+                    added_edges.add(eid)
+        return sg
+
+
+def _build_graph(skeleton_bin):
+    """
+    Build a SkeletonGraph from a binary skeleton image.
+
+    1. Compute degree map and classify pixels.
+    2. Create a node for every endpoint and junction.
+    3. Trace chains of path-pixels between nodes to create edges.
+    4. Handle isolated loops (no junctions/endpoints) as single-edge cycles.
+    """
+    skel = (skeleton_bin > 0).astype(np.uint8)
+    h, w = skel.shape
+    deg = _degree_map(skel)
+    endpoints, junctions, _ = _classify_pixels(deg, skel)
+
+    graph = SkeletonGraph()
+    node_pixels = endpoints | junctions
+
+    for (r, c) in node_pixels:
+        graph.add_node(r, c)
+
+    visited_pixels = set()
+
+    def _get_skel_neighbours(r, c):
+        nbrs = []
+        for dr, dc in _NBRS_8:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < h and 0 <= nc < w and skel[nr, nc]:
+                nbrs.append((nr, nc))
+        return nbrs
+
+    def _trace_from(start_node_pos, first_step):
+        """
+        Walk from a node pixel through first_step along path pixels
+        until we reach another node pixel (or dead end).
+        Returns (end_node_pos_or_None, chain_pixels_excluding_nodes).
+        """
+        chain = []
+        prev = start_node_pos
+        cur = first_step
+        while True:
+            if cur in node_pixels:
+                return cur, chain
+            chain.append(cur)
+            visited_pixels.add(cur)
+            # Neighbours: prefer node pixels (to terminate), skip visited
+            nbrs_with_nodes = [n for n in _get_skel_neighbours(*cur)
+                               if n != prev and (n in node_pixels or n not in visited_pixels)]
+            if not nbrs_with_nodes:
+                return None, chain
+            node_nbrs = [n for n in nbrs_with_nodes if n in node_pixels]
+            if node_nbrs:
+                return node_nbrs[0], chain
+            nxt = nbrs_with_nodes[0]
+            prev = cur
+            cur = nxt
+
+    edge_set = set()
+
+    for (r, c) in node_pixels:
+        nid_start = graph._pos_to_node[(r, c)]
+        for nr, nc in _get_skel_neighbours(r, c):
+            if (nr, nc) in node_pixels:
+                # Direct node-to-node adjacency (no path pixels in between)
+                nid_end = graph._pos_to_node[(nr, nc)]
+                key = frozenset([nid_start, nid_end])
+                if key not in edge_set:
+                    graph.add_edge(nid_start, nid_end, [])
+                    edge_set.add(key)
+            elif (nr, nc) not in visited_pixels:
+                end_pos, chain = _trace_from((r, c), (nr, nc))
+                if end_pos is not None and end_pos in graph._pos_to_node:
+                    nid_end = graph._pos_to_node[end_pos]
+                    chain_key = (frozenset([nid_start, nid_end]), len(chain))
+                    if chain_key not in edge_set:
+                        graph.add_edge(nid_start, nid_end, chain)
+                        edge_set.add(chain_key)
+
+    # --- Handle isolated loops (all degree-2, no nodes) ---
+    all_assigned = set(node_pixels) | visited_pixels
+    remaining = set(zip(*np.where(skel > 0))) - all_assigned
+    while remaining:
+        start = next(iter(remaining))
+        loop_pixels = [start]
+        remaining.discard(start)
+        cur = start
+        prev = None
+        while True:
+            nbrs = [n for n in _get_skel_neighbours(*cur)
+                     if n != prev and n in remaining]
+            if not nbrs:
+                break
+            nxt = nbrs[0]
+            loop_pixels.append(nxt)
+            remaining.discard(nxt)
+            prev = cur
+            cur = nxt
+        if len(loop_pixels) >= 2:
+            nid_a = graph.add_node(*loop_pixels[0])
+            nid_b = graph.add_node(*loop_pixels[-1])
+            graph.add_edge(nid_a, nid_b, loop_pixels[1:-1])
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# 3.  Keep only the largest connected component
+# ---------------------------------------------------------------------------
+
+def _keep_largest_component(graph):
+    """Keep only the component with the most total pixels."""
+    components = graph.connected_components()
+    if len(components) <= 1:
+        return graph
+
+    best_comp = None
+    best_count = -1
+    for comp_nodes in components:
+        sg = graph.subgraph(comp_nodes)
+        count = sg.total_pixel_count()
+        if count > best_count:
+            best_count = count
+            best_comp = comp_nodes
+
+    return graph.subgraph(best_comp)
+
+
+# ---------------------------------------------------------------------------
+# 4.  Iterative branch pruning
+# ---------------------------------------------------------------------------
+
+def _prune_branches(graph, min_branch_ratio=0.15, min_branch_length=10):
+    """
+    Iteratively remove short leaf branches until only the main crack
+    backbone remains.
+
+    A *leaf* is a node with degree == 1.  Its single incident edge is
+    a *branch*.  A branch is pruned if:
+        branch_length < min_branch_length
+        OR
+        branch_length / longest_edge_length < min_branch_ratio
+
+    Removing a branch may create new leaves -> iterate.
+    """
+    changed = True
+    while changed:
+        changed = False
+        if not graph.edges:
+            break
+        max_edge_len = max(e['length'] for e in graph.edges.values())
+        threshold = max(min_branch_length, int(max_edge_len * min_branch_ratio))
+
+        leaves = [nid for nid in graph.node_pos if graph.degree(nid) == 1]
+
+        for leaf in leaves:
+            if leaf not in graph.adj:
+                continue
+            if graph.degree(leaf) != 1:
+                continue
+            nbr, eid = next(iter(graph.adj[leaf]))
+            edge_len = graph.edges[eid]['length']
+
+            if edge_len < threshold:
+                graph.remove_edge(eid)
+                graph.remove_node(leaf)
+                if nbr in graph.adj and graph.degree(nbr) == 0:
+                    graph.remove_node(nbr)
+                changed = True
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# 5.  Reduce to single longest path through the graph (double-BFS)
+# ---------------------------------------------------------------------------
+
+def _longest_path_bfs(graph):
+    """
+    Find the longest simple path in the (tree-like) graph using double-BFS.
+    Returns the set of (row, col) pixels along that path.
+    """
+    if not graph.node_pos:
+        return set()
+
+    def _bfs_farthest(start):
+        dist = {start: 0}
+        queue = deque([start])
+        farthest = start
+        while queue:
+            cur = queue.popleft()
+            for nbr, eid in graph.adj.get(cur, []):
+                if nbr not in dist:
+                    dist[nbr] = dist[cur] + graph.edges[eid]['length'] + 1
+                    queue.append(nbr)
+                    if dist[nbr] > dist[farthest]:
+                        farthest = nbr
+        return farthest, dist
+
+    start_node = next(iter(graph.node_pos))
+    far1, _ = _bfs_farthest(start_node)
+    far2, _ = _bfs_farthest(far1)
+
+    # Reconstruct path far1 -> far2
+    parent = {far1: None}
+    parent_edge = {far1: None}
+    queue = deque([far1])
+    while queue:
+        cur = queue.popleft()
+        if cur == far2:
+            break
+        for nbr, eid in graph.adj.get(cur, []):
+            if nbr not in parent:
+                parent[nbr] = cur
+                parent_edge[nbr] = eid
+                queue.append(nbr)
+
+    path_pixels = set()
+    cur = far2
+    while cur is not None:
+        path_pixels.add(graph.node_pos[cur])
+        eid = parent_edge.get(cur)
+        if eid is not None and eid in graph.edges:
+            path_pixels.update(graph.edges[eid]['pixels'])
+        cur = parent.get(cur)
+
+    return path_pixels
+
+
+# ---------------------------------------------------------------------------
+# 6.  Rendering helper
+# ---------------------------------------------------------------------------
+
+def _graph_to_image(graph, shape):
+    """Render a SkeletonGraph back to a binary image."""
+    img = np.zeros(shape, dtype=np.uint8)
+    for (r, c) in graph.node_pos.values():
+        if 0 <= r < shape[0] and 0 <= c < shape[1]:
+            img[r, c] = 255
+    for e in graph.edges.values():
+        for (r, c) in e['pixels']:
+            if 0 <= r < shape[0] and 0 <= c < shape[1]:
+                img[r, c] = 255
+    return img
+
+
+# ---------------------------------------------------------------------------
+# 7.  Public API
+# ---------------------------------------------------------------------------
+
+def refine_skeleton(skeleton_img,
+                    min_branch_ratio=0.15,
+                    min_branch_length=10,
+                    keep_only_longest_path=True):
+    """
+    Refine a skeleton image by removing short branches and keeping
+    only the main crack backbone.
+
+    Parameters
+    ----------
+    skeleton_img : np.ndarray
+        Binary or float skeleton image (non-zero = skeleton).
+        Can be the raw ``img_skl`` from CrackAnalyse (width-valued).
+    min_branch_ratio : float
+        Branches shorter than this fraction of the longest edge are pruned.
+    min_branch_length : int
+        Absolute minimum branch length (pixels) below which pruning occurs.
+    keep_only_longest_path : bool
+        If True, after pruning, further reduce to the single longest path
+        (removes any remaining Y-forks).
+
+    Returns
+    -------
+    cleaned_skeleton : np.ndarray  (same shape, dtype uint8, values 0/255)
+    """
+    skel_bin = (skeleton_img > 0).astype(np.uint8)
+
+    if cv2.countNonZero(skel_bin) == 0:
+        return np.zeros_like(skeleton_img, dtype=np.uint8)
+
+    # Build graph
+    graph = _build_graph(skel_bin)
+    n_components = len(graph.connected_components())
+    print(f"[skeleton_refine] Graph: {len(graph.node_pos)} nodes, "
+          f"{len(graph.edges)} edges, {n_components} components")
+
+    # Keep largest connected component
+    graph = _keep_largest_component(graph)
+    print(f"[skeleton_refine] Largest component: "
+          f"{len(graph.node_pos)} nodes, {len(graph.edges)} edges")
+
+    # Prune short branches iteratively
+    graph = _prune_branches(graph, min_branch_ratio, min_branch_length)
+    print(f"[skeleton_refine] After pruning: "
+          f"{len(graph.node_pos)} nodes, {len(graph.edges)} edges")
+
+    # Optionally reduce to single longest path
+    if keep_only_longest_path:
+        path_pixels = _longest_path_bfs(graph)
+        cleaned = np.zeros(skel_bin.shape, dtype=np.uint8)
+        for (r, c) in path_pixels:
+            if 0 <= r < cleaned.shape[0] and 0 <= c < cleaned.shape[1]:
+                cleaned[r, c] = 255
+        print(f"[skeleton_refine] Longest path: {len(path_pixels)} pixels")
+    else:
+        cleaned = _graph_to_image(graph, skel_bin.shape)
+
+    return cleaned
+
+
+def refine_skeleton_preserve_widths(skeleton_width_img,
+                                     min_branch_ratio=0.15,
+                                     min_branch_length=10,
+                                     keep_only_longest_path=True):
+    """
+    Same as ``refine_skeleton`` but preserves the original width values
+    from a width-valued skeleton (e.g. ``img_skl`` from CrackAnalyse).
+
+    Returns
+    -------
+    cleaned_skeleton : np.ndarray  (same shape/dtype as input, original width values kept)
+    """
+    mask = refine_skeleton(
+        skeleton_width_img,
+        min_branch_ratio=min_branch_ratio,
+        min_branch_length=min_branch_length,
+        keep_only_longest_path=keep_only_longest_path,
+    )
+    result = skeleton_width_img.copy()
+    result[mask == 0] = 0
+    return result

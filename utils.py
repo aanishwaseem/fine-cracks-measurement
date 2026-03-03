@@ -30,7 +30,7 @@ def run_inference(tiles_dir, output_dir="experiment"):
         "-model_type", "vgg16",
         "-out_viz_dir", "viz_result",
         "-out_pred_dir", output_dir,
-        "-threshold", "0.2"
+        "-threshold", "0.2",
     ]
 
     try:
