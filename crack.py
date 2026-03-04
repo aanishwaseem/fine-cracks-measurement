@@ -665,7 +665,7 @@ def process_image(debug=False):
         #   DeepCrack → models/DeepCrack/codes/input_tiles
         # There is zero shared state, so both can run simultaneously.
 
-        _TILE_SIZE = 200
+        _TILE_SIZE = 300
 
         # Check whether grid removal result is already cached
         if cache_key in _grid_removal_cache:
