@@ -69,6 +69,7 @@ disable_cache = False  # Set to True to disable caching
 displacement_x = 0.0 
 binary_mask = None
 org_binary_mask = None
+unet_binary_mask = None
 contrast_value = 0.08
 threshold_value = 23
 scale_image_factor = 2
@@ -614,7 +615,7 @@ def clear_cache():
 
 def process_image(debug=False):
     global image, crack_image_on_bright, scaling_factor_width, scaling_factor_height
-    global _grid_removal_cache, _crack_detection_cache
+    global _grid_removal_cache, _crack_detection_cache, unet_binary_mask
     
     # ✅ OPTIMIZATION 1: Skip scaling factor detection after first pass
     if current_image_index < NUM_SCALING_IMAGES and current_image_index == 0:
@@ -665,7 +666,7 @@ def process_image(debug=False):
         #   DeepCrack → models/DeepCrack/codes/input_tiles
         # There is zero shared state, so both can run simultaneously.
 
-        _TILE_SIZE = 200
+        _TILE_SIZE = 300
 
         # Check whether grid removal result is already cached
         if cache_key in _grid_removal_cache:
@@ -697,6 +698,12 @@ def process_image(debug=False):
                     _unet_data["result"] = reconstructed
                     _unet_data["status"] = "complete"
                     print("[✓] UNet inference complete")
+                    # Process UNet result: threshold + reference intersection → clean binary
+                    global unet_binary_mask
+                    _unet_binary = get_binary_image_of_cracks(reconstructed, threshold_value)
+                    _unet_binary = intersect_masks(reference_image, _unet_binary)
+                    unet_binary_mask = _unet_binary
+                    print("[✓] unet_binary_mask set (thresholded + reference-intersected)")
                 else:
                     _unet_data["status"] = "error"
                     print("[✗] UNet inference failed")
@@ -965,11 +972,31 @@ def on_mouse(event, x, y, flags, param):
                 x, y, w, h = cv2.boundingRect(pts)
                 mask_cropped = mask[y:y+h, x:x+w]
 
-                # --- Crop the **binary crack image** using the mask ---
-                # Extract only the crack pixels within the polygon region
-                selected_poly = cv2.bitwise_and(binary_mask[y:y+h, x:x+w],
-                                                binary_mask[y:y+h, x:x+w],
-                                                mask=mask_cropped)
+                # --- Choose source mask for skeleton/width analysis (UNet-only) ---
+                if unet_binary_mask is not None:
+                    _analysis_source = unet_binary_mask
+                    print("[INFO] Using processed UNet-only mask for skeleton/width analysis")
+                else:
+                    _analysis_source = binary_mask
+                    print("[WARN] unet_binary_mask not available, falling back to combined binary_mask")
+
+                # --- Crop the analysis source using the polygon mask ---
+                selected_poly = cv2.bitwise_and(
+                    _analysis_source[y:y+h, x:x+w],
+                    _analysis_source[y:y+h, x:x+w],
+                    mask=mask_cropped
+                )
+
+                # --- Debug: show user polygon overlaid on UNet mask (cropped to bbox) ---
+                if unet_binary_mask is not None:
+                    _unet_dbg = cv2.cvtColor(unet_binary_mask.copy(), cv2.COLOR_GRAY2BGR)
+                    cv2.polylines(_unet_dbg, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+                    _poly_fill = _unet_dbg.copy()
+                    cv2.fillPoly(_poly_fill, [pts], (0, 180, 0))
+                    _unet_dbg = cv2.addWeighted(_unet_dbg, 0.7, _poly_fill, 0.3, 0)
+                    _unet_dbg_crop = _unet_dbg[y:y+h, x:x+w].copy()
+                    cv2.imshow("DBG: UNet mask — polygon region", _unet_dbg_crop)
+                    print(f"[DBG] UNet polygon crop shown  bbox=({x},{y},{w},{h})")
 
                 # --- Analyze cracks in polygon ---
                 # Pass grayscale binary mask directly (values: 0 for background, 255 for cracks)
