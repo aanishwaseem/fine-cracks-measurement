@@ -2,7 +2,7 @@
 Headless crack-extraction pipeline (no GUI windows, no gridline removal, no IOPaint).
 
 Mirrors crack.py -> process_image():
-    1. upscale the image x2 (crack.py uses RealESRGAN through IOPaint; here plain bicubic)
+    1. upscale the image x2 (bicubic, or RealESRGAN through IOPaint with --iopaint like crack.py)
     2. UNet (models/crack_segmentation) on 300px tiles
     3. DeepCrack (models/DeepCrack) on 400px tiles with contrast enhancement
     4. merge both predictions (pixel-wise max)
@@ -10,7 +10,9 @@ Mirrors crack.py -> process_image():
     6. keep only cracks inside the dataset's reference mask
 
 Usage:
-    python run_pipeline.py --image "<path to image>" [--reference <ref.png>] [--out outputs]
+    python run_pipeline.py --image "<path to image>" [--reference <ref.png>] [--out outputs] [--iopaint]
+
+--iopaint needs the IOPaint server on port 8000 (see "iopaint commands").
 
 If --reference is omitted, references/<dataset folder>_ref.png is used
 (same naming as gen_ref_mask.get_reference_path).
@@ -62,10 +64,12 @@ def run_unet(image):
                                       original_h=image.shape[0], original_w=image.shape[1])
 
 
-def run_deepcrack(image):
+def run_deepcrack(image, tile_size=DEEPCRACK_TILE_SIZE):
+    # Smaller tiles are upscaled more before DeepCrack (tiles are resized to 512px),
+    # so thinner cracks get detected.
     return start_deepcrack_pipeline(image, f"{deep_crack_dir_string}/input_tiles",
                                     original_h=image.shape[0], original_w=image.shape[1],
-                                    tile_size=DEEPCRACK_TILE_SIZE, inc_contrast=True)
+                                    tile_size=tile_size, inc_contrast=True)
 
 
 def main():
@@ -74,6 +78,10 @@ def main():
     parser.add_argument("--reference", default=None)
     parser.add_argument("--out", default="outputs")
     parser.add_argument("--threshold", type=int, default=THRESHOLD_VALUE)
+    parser.add_argument("--iopaint", action="store_true",
+                        help="upscale with RealESRGAN via the IOPaint server (scale_image.py)")
+    parser.add_argument("--deepcrack-tile", type=int, default=DEEPCRACK_TILE_SIZE,
+                        help="DeepCrack tile size in px; lower = more aggressive")
     args = parser.parse_args()
 
     image = cv2.imread(args.image)
@@ -86,7 +94,12 @@ def main():
     print(f"[INFO] image: {args.image} {image.shape}")
     print(f"[INFO] reference: {ref_path} {reference.shape}")
 
-    image = upscale(image, SCALE_FACTOR)
+    if args.iopaint:
+        from scale_image import scale_image
+        print("[→] RealESRGAN x2 upscale via IOPaint ...")
+        image = scale_image(image, SCALE_FACTOR)
+    else:
+        image = upscale(image, SCALE_FACTOR)
     if reference.shape != image.shape[:2]:
         print(f"[WARN] resizing reference {reference.shape} -> {image.shape[:2]}")
         reference = cv2.resize(reference, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -94,7 +107,8 @@ def main():
     print("[→] UNet ...")
     unet = run_unet(image)
     print("[→] DeepCrack ...")
-    deepcrack = run_deepcrack(image)
+    print(f"[INFO] DeepCrack tile size: {args.deepcrack_tile}")
+    deepcrack = run_deepcrack(image, args.deepcrack_tile)
 
     merged = overlay_binary_images(unet, deepcrack)
     binary = get_binary_image_of_cracks(merged, args.threshold)
@@ -102,6 +116,10 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     stem = re.sub(r"[^\w\-]", "_", os.path.splitext(os.path.basename(args.image))[0])
+    if args.deepcrack_tile != DEEPCRACK_TILE_SIZE:
+        stem += f"_dc{args.deepcrack_tile}"
+    if args.iopaint:
+        stem += "_iopaint"
     overlay = image.copy()
     overlay[binary > 0] = (0, 0, 255)
     outputs = {
