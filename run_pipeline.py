@@ -80,6 +80,9 @@ def main():
     parser.add_argument("--threshold", type=int, default=THRESHOLD_VALUE)
     parser.add_argument("--iopaint", action="store_true",
                         help="upscale with RealESRGAN via the IOPaint server (scale_image.py)")
+    parser.add_argument("--size", default=None, metavar="WxH",
+                        help="resize image and reference to WxH (e.g. 448x224); the models still run "
+                             "on the x2 upscaled image and the result is brought back to WxH")
     parser.add_argument("--deepcrack-tile", type=int, default=DEEPCRACK_TILE_SIZE,
                         help="DeepCrack tile size in px; lower = more aggressive")
     args = parser.parse_args()
@@ -94,13 +97,22 @@ def main():
     print(f"[INFO] image: {args.image} {image.shape}")
     print(f"[INFO] reference: {ref_path} {reference.shape}")
 
+    size = None
+    if args.size:
+        size = tuple(int(v) for v in args.size.lower().split("x"))  # (W, H)
+        image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+        # INTER_AREA + ">0" keeps thin reference cracks that nearest-neighbour would drop
+        reference = np.where(cv2.resize(reference, size, interpolation=cv2.INTER_AREA) > 0, 255, 0).astype(np.uint8)
+        print(f"[INFO] resized image and reference to {size[0]}x{size[1]}")
+    input_image = image
+
     if args.iopaint:
         from scale_image import scale_image
         print("[→] RealESRGAN x2 upscale via IOPaint ...")
         image = scale_image(image, SCALE_FACTOR)
     else:
         image = upscale(image, SCALE_FACTOR)
-    if reference.shape != image.shape[:2]:
+    if size is None and reference.shape != image.shape[:2]:
         print(f"[WARN] resizing reference {reference.shape} -> {image.shape[:2]}")
         reference = cv2.resize(reference, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -111,6 +123,9 @@ def main():
     deepcrack = run_deepcrack(image, args.deepcrack_tile)
 
     merged = overlay_binary_images(unet, deepcrack)
+    if size is not None:
+        merged = cv2.resize(merged, size, interpolation=cv2.INTER_AREA)
+        image = input_image
     binary = get_binary_image_of_cracks(merged, args.threshold)
     binary = intersect_masks(reference, binary)
 
@@ -120,6 +135,8 @@ def main():
         stem += f"_dc{args.deepcrack_tile}"
     if args.iopaint:
         stem += "_iopaint"
+    if size is not None:
+        stem += f"_{size[0]}x{size[1]}"
     overlay = image.copy()
     overlay[binary > 0] = (0, 0, 255)
     outputs = {
@@ -128,6 +145,8 @@ def main():
         f"{stem}_unet_raw.png": unet,
         f"{stem}_deepcrack_raw.png": deepcrack,
     }
+    if size is not None:
+        outputs[f"{stem}_reference.png"] = reference
     for name, img in outputs.items():
         cv2.imwrite(os.path.join(args.out, name), img)
         print(f"[✓] saved {os.path.join(args.out, name)}")
