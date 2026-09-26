@@ -88,6 +88,32 @@ def run_deepcrack_only(image, args):
     print(f"[INFO] crack pixels: {int(np.count_nonzero(binary))}")
 
 
+def run_unet_only(image, args):
+    print(f"[INFO] image: {args.image} {image.shape}")
+    if args.upscale > 1:
+        if args.iopaint:
+            from scale_image import scale_image
+            print(f"[→] RealESRGAN x{args.upscale} upscale via IOPaint ...")
+            image = scale_image(image, args.upscale)
+        else:
+            image = upscale(image, args.upscale)
+        print(f"[INFO] upscaled to {image.shape}")
+    print("[→] UNet only ...")
+    unet = run_unet(image)
+    binary = get_binary_image_of_cracks(unet, args.threshold)
+    if binary.ndim == 3:
+        binary = cv2.cvtColor(binary, cv2.COLOR_BGR2GRAY)
+
+    os.makedirs(args.out, exist_ok=True)
+    stem = re.sub(r"[^\w\-]", "_", os.path.splitext(os.path.basename(args.image))[0]) + "_unet_only"
+    if args.upscale > 1:
+        stem += f"_x{args.upscale}" + ("_iopaint" if args.iopaint else "")
+    for name, img in {f"{stem}_binary.png": binary, f"{stem}_raw.png": unet}.items():
+        cv2.imwrite(os.path.join(args.out, name), img)
+        print(f"[✓] saved {os.path.join(args.out, name)}")
+    print(f"[INFO] crack pixels: {int(np.count_nonzero(binary))}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract a binary crack mask from one image.")
     parser.add_argument("--image", required=True)
@@ -102,6 +128,10 @@ def main():
     parser.add_argument("--deepcrack-only", action="store_true",
                         help="run only DeepCrack on the image as-is (no upscale, UNet or reference) "
                              "and threshold its output")
+    parser.add_argument("--unet-only", action="store_true",
+                        help="run only UNet (no DeepCrack or reference) and threshold its output")
+    parser.add_argument("--upscale", type=int, default=1,
+                        help="with --unet-only: upscale factor before UNet (2 or 4; RealESRGAN with --iopaint)")
     parser.add_argument("--deepcrack-tile", type=int, default=DEEPCRACK_TILE_SIZE,
                         help="DeepCrack tile size in px; lower = more aggressive")
     args = parser.parse_args()
@@ -111,6 +141,9 @@ def main():
         raise FileNotFoundError(args.image)
     if args.deepcrack_only:
         run_deepcrack_only(image, args)
+        return
+    if args.unet_only:
+        run_unet_only(image, args)
         return
     ref_path = args.reference or get_reference_path(os.path.dirname(os.path.abspath(args.image)))
     reference = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
