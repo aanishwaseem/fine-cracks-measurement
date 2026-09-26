@@ -130,8 +130,9 @@ def main():
                              "and threshold its output")
     parser.add_argument("--unet-only", action="store_true",
                         help="run only UNet (no DeepCrack or reference) and threshold its output")
-    parser.add_argument("--upscale", type=int, default=1,
-                        help="with --unet-only: upscale factor before UNet (2 or 4; RealESRGAN with --iopaint)")
+    parser.add_argument("--upscale", type=int, default=None,
+                        help="upscale factor before the models (2 or 4; RealESRGAN with --iopaint). "
+                             "Default: 2 for the full pipeline, 1 for --unet-only")
     parser.add_argument("--deepcrack-tile", type=int, default=DEEPCRACK_TILE_SIZE,
                         help="DeepCrack tile size in px; lower = more aggressive")
     args = parser.parse_args()
@@ -143,6 +144,7 @@ def main():
         run_deepcrack_only(image, args)
         return
     if args.unet_only:
+        args.upscale = args.upscale or 1
         run_unet_only(image, args)
         return
     ref_path = args.reference or get_reference_path(os.path.dirname(os.path.abspath(args.image)))
@@ -161,12 +163,14 @@ def main():
         print(f"[INFO] resized image and reference to {size[0]}x{size[1]}")
     input_image = image
 
+    factor = args.upscale or SCALE_FACTOR
     if args.iopaint:
         from scale_image import scale_image
-        print("[→] RealESRGAN x2 upscale via IOPaint ...")
-        image = scale_image(image, SCALE_FACTOR)
+        print(f"[→] RealESRGAN x{factor} upscale via IOPaint ...")
+        image = scale_image(image, factor)
     else:
-        image = upscale(image, SCALE_FACTOR)
+        image = upscale(image, factor)
+    print(f"[INFO] upscaled to {image.shape}")
     if size is None and reference.shape != image.shape[:2]:
         print(f"[WARN] resizing reference {reference.shape} -> {image.shape[:2]}")
         reference = cv2.resize(reference, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -181,13 +185,15 @@ def main():
     if size is not None:
         merged = cv2.resize(merged, size, interpolation=cv2.INTER_AREA)
         image = input_image
-    binary = get_binary_image_of_cracks(merged, args.threshold)
-    binary = intersect_masks(reference, binary)
+    binary_no_ref = get_binary_image_of_cracks(merged, args.threshold)
+    binary = intersect_masks(reference, binary_no_ref)
 
     os.makedirs(args.out, exist_ok=True)
     stem = re.sub(r"[^\w\-]", "_", os.path.splitext(os.path.basename(args.image))[0])
     if args.deepcrack_tile != DEEPCRACK_TILE_SIZE:
         stem += f"_dc{args.deepcrack_tile}"
+    if factor != SCALE_FACTOR:
+        stem += f"_x{factor}"
     if args.iopaint:
         stem += "_iopaint"
     if size is not None:
@@ -196,6 +202,7 @@ def main():
     overlay[binary > 0] = (0, 0, 255)
     outputs = {
         f"{stem}_binary.png": binary,
+        f"{stem}_binary_no_reference.png": binary_no_ref,
         f"{stem}_overlay.png": overlay,
         f"{stem}_unet_raw.png": unet,
         f"{stem}_deepcrack_raw.png": deepcrack,
@@ -205,7 +212,8 @@ def main():
     for name, img in outputs.items():
         cv2.imwrite(os.path.join(args.out, name), img)
         print(f"[✓] saved {os.path.join(args.out, name)}")
-    print(f"[INFO] crack pixels: {int(np.count_nonzero(binary))}")
+    print(f"[INFO] crack pixels: {int(np.count_nonzero(binary))} "
+          f"(without reference: {int(np.count_nonzero(binary_no_ref))})")
 
 
 if __name__ == "__main__":
