@@ -72,6 +72,22 @@ def run_deepcrack(image, tile_size=DEEPCRACK_TILE_SIZE):
                                     tile_size=tile_size, inc_contrast=True)
 
 
+def run_deepcrack_only(image, args):
+    print(f"[INFO] image: {args.image} {image.shape}")
+    print(f"[→] DeepCrack only (tile size {args.deepcrack_tile}) ...")
+    deepcrack = run_deepcrack(image, args.deepcrack_tile)
+    binary = get_binary_image_of_cracks(deepcrack, args.threshold)
+    if binary.ndim == 3:
+        binary = cv2.cvtColor(binary, cv2.COLOR_BGR2GRAY)
+
+    os.makedirs(args.out, exist_ok=True)
+    stem = re.sub(r"[^\w\-]", "_", os.path.splitext(os.path.basename(args.image))[0]) + "_deepcrack_only"
+    for name, img in {f"{stem}_binary.png": binary, f"{stem}_raw.png": deepcrack}.items():
+        cv2.imwrite(os.path.join(args.out, name), img)
+        print(f"[✓] saved {os.path.join(args.out, name)}")
+    print(f"[INFO] crack pixels: {int(np.count_nonzero(binary))}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract a binary crack mask from one image.")
     parser.add_argument("--image", required=True)
@@ -83,6 +99,9 @@ def main():
     parser.add_argument("--size", default=None, metavar="WxH",
                         help="resize image and reference to WxH (e.g. 448x224); the models still run "
                              "on the x2 upscaled image and the result is brought back to WxH")
+    parser.add_argument("--deepcrack-only", action="store_true",
+                        help="run only DeepCrack on the image as-is (no upscale, UNet or reference) "
+                             "and threshold its output")
     parser.add_argument("--deepcrack-tile", type=int, default=DEEPCRACK_TILE_SIZE,
                         help="DeepCrack tile size in px; lower = more aggressive")
     args = parser.parse_args()
@@ -90,6 +109,9 @@ def main():
     image = cv2.imread(args.image)
     if image is None:
         raise FileNotFoundError(args.image)
+    if args.deepcrack_only:
+        run_deepcrack_only(image, args)
+        return
     ref_path = args.reference or get_reference_path(os.path.dirname(os.path.abspath(args.image)))
     reference = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
     if reference is None:
