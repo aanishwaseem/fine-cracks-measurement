@@ -118,6 +118,8 @@ def main():
     parser = argparse.ArgumentParser(description="Extract a binary crack mask from one image.")
     parser.add_argument("--image", required=True)
     parser.add_argument("--reference", default=None)
+    parser.add_argument("--no-reference", action="store_true",
+                        help="skip the reference intersection; only the unmasked binary is saved")
     parser.add_argument("--out", default="outputs")
     parser.add_argument("--threshold", type=int, default=THRESHOLD_VALUE)
     parser.add_argument("--iopaint", action="store_true",
@@ -147,12 +149,16 @@ def main():
         args.upscale = args.upscale or 1
         run_unet_only(image, args)
         return
-    ref_path = args.reference or get_reference_path(os.path.dirname(os.path.abspath(args.image)))
-    reference = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
-    if reference is None:
-        raise FileNotFoundError(ref_path)
     print(f"[INFO] image: {args.image} {image.shape}")
-    print(f"[INFO] reference: {ref_path} {reference.shape}")
+    if args.no_reference:
+        reference = np.full(image.shape[:2], 255, np.uint8)  # keeps everything
+        print("[INFO] no reference intersection")
+    else:
+        ref_path = args.reference or get_reference_path(os.path.dirname(os.path.abspath(args.image)))
+        reference = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
+        if reference is None:
+            raise FileNotFoundError(ref_path)
+        print(f"[INFO] reference: {ref_path} {reference.shape}")
 
     size = None
     if args.size:
@@ -209,6 +215,9 @@ def main():
     }
     if size is not None:
         outputs[f"{stem}_reference.png"] = reference
+    if args.no_reference:
+        del outputs[f"{stem}_binary.png"]  # identical to the _no_reference file
+        outputs[f"{stem}_overlay.png"] = overlay
     for name, img in outputs.items():
         cv2.imwrite(os.path.join(args.out, name), img)
         print(f"[✓] saved {os.path.join(args.out, name)}")
