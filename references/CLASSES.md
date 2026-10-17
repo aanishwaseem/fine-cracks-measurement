@@ -29,3 +29,5 @@ How the rules were applied (hand-assigned per crack, from zoomed tiles):
 - A long diagonal (roughly 25-50 degrees) inside the panel is Shear Type 2; steeper inclined cracks that begin at a side or the bottom are Shear Type 1.
 - A crack that flattens out low in the frame (below about 85% of the height, under about 25 degrees) is rebar detachment from that point on.
 - A mark that touches the top edge is compression. In B-868 this is a dark patch in the top-left corner, which may be a stain rather than a crack.
+
+Full description of the labelling method: `../LABELING.md`.

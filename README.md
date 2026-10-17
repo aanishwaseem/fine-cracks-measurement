@@ -153,3 +153,4 @@ python run_folder.py "datasets/C-1700-4.60_Cropped" --iopaint --reference refere
 - **Windows paths with spaces or brackets:** keep the quotes around file and folder names, e.g. `"cropped_C-1700-4.600.2mmX (81).jpg"`.
 - **Do not run two pipelines at once** in the same checkout; they overwrite each other's tiles.
 - The original GUI (`crack.py`) still works as before: see `Running the code`.
+- How the reference images are labelled with the five crack classes: see `LABELING.md`.
